@@ -1,0 +1,53 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #0a0e1a; color: #e8ecf4;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+#app { max-width: 720px; margin: 0 auto; padding: 12px; }
+header { display: flex; justify-content: space-between; align-items: center; }
+header h1 { font-size: 1.3rem; margin: 8px 0; }
+.status {
+  padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600;
+}
+.status.idle { background: #2a3350; color: #9fb0d0; }
+.status.recording { background: #7a1f1f; color: #ffb3b3; animation: pulse 1.5s infinite; }
+@keyframes pulse { 50% { opacity: 0.6; } }
+#camera-wrap { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; }
+#cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#overlay { pointer-events: none; }
+#camera-hint {
+  position: absolute; bottom: 8px; left: 8px; right: 8px;
+  background: rgba(0,0,0,0.65); padding: 8px; border-radius: 8px;
+  font-size: 0.75rem; text-align: center; color: #cdd8ee;
+}
+#controls2 { display: flex; gap: 10px; margin: 0 0 14px; }
+#clip-toggle-wrap { display: block; margin: 0 0 10px; font-size: 0.9rem; color: #cdd8ee; }
+#clip-toggle-wrap input { transform: scale(1.3); margin-right: 8px; }
+button.big {
+  flex: 1; padding: 16px; font-size: 1.1rem; font-weight: 700;
+  border: none; border-radius: 12px; cursor: pointer;
+}
+#btn-start { background: #1f7a3a; color: #fff; }
+#btn-start:disabled { background: #2a3350; color: #777; }
+#btn-stop { background: #a02a2a; color: #fff; }
+#btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+.hidden { display: none !important; }
+#live-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.metric { background: #141b2e; border-radius: 10px; padding: 10px 6px; text-align: center; }
+.metric .label { display: block; font-size: 0.7rem; color: #8a9bbd; text-transform: uppercase; }
+.metric .value { display: block; font-size: 1.25rem; font-weight: 700; margin-top: 4px; }
+h2 { font-size: 1.05rem; margin: 14px 0 8px; }
+#swing-log .empty { color: #8a9bbd; font-style: italic; }
+.swing-card {
+  background: #141b2e; border-radius: 10px; padding: 12px; margin-bottom: 8px;
+  border-left: 4px solid #2a5aa0;
+}
+.swing-card.tracked { border-left-color: #1f7a3a; }
+.swing-card.notracked { border-left-color: #7a6a1f; }
+.swing-card h3 { margin: 0 0 6px; font-size: 1rem; }
+.swing-card .nums { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.9rem; }
+.swing-card .nums b { color: #fff; }
+.swing-card .note { font-size: 0.78rem; color: #8a9bbd; margin-top: 6px; }
+#profile-details { margin-top: 16px; font-size: 0.82rem; color: #9fb0d0; }
+#profile-details summary { cursor: pointer; color: #cdd8ee; }

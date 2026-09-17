@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<title>Cage Session — Stadium Slugger</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>⚾ Cage Session</h1>
+    <div id="session-status" class="status idle">Ready</div>
+  </header>
+
+  <div id="camera-wrap">
+    <video id="cam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
+  </div>
+
+  <div id="controls">
+    <button id="btn-start" class="big">● Start Live Session</button>
+    <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
+  </div>
+  <label id="clip-toggle-wrap"><input type="checkbox" id="clip-toggle"> Save a short clip per swing (~2 MB each)</label>
+  <div id="controls2">
+    <button id="btn-download" class="hidden" disabled>⬇ Save Swing Log</button>
+  </div>
+
+  <div id="live-metrics">
+    <div class="metric"><span class="label">Swings</span><span id="m-swings" class="value">0</span></div>
+    <div class="metric"><span class="label">Last EV</span><span id="m-ev" class="value">—</span></div>
+    <div class="metric"><span class="label">Last LA</span><span id="m-la" class="value">—</span></div>
+    <div class="metric"><span class="label">Recording</span><span id="m-rec" class="value">—</span></div>
+  </div>
+
+  <h2>Swing Log</h2>
+  <div id="swing-log"><p class="empty">No swings yet. Take a cut.</p></div>
+
+  <details id="profile-details">
+    <summary>Calibration profile</summary>
+    <div id="profile-info">Loading…</div>
+  </details>
+</div>
+<script src="../calibration-wizard/calibration.js"></script>
+<script src="session.js"></script>
+</body>
+</html>
