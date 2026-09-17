@@ -38,6 +38,7 @@
     heightSamples: [],      // solveHeightScale results
     pendingBase: null,
     tapping: null,          // 'ref' | 'heightBase' | 'heightTop' | 'verifyBall'
+    view: { z: 1, cx: null, cy: null }, // stage zoom/pan (natural px center); not persisted
     verification: null,
     profile: null,
     source: null,           // 'live' | 'still' | 'demo'
@@ -99,7 +100,7 @@
     var st = $("tapStage");
     if (slot && st && st.parentNode !== slot) {
       slot.appendChild(st);
-      renderMarkers();
+      layoutMedia();
     }
     if (i === 2) { renderPresets(); renderRefs(); drawDemo(); }
     if (i === 3) renderSolve();
@@ -160,6 +161,7 @@
     $("liveVideo").hidden = which !== "live";
     $("stillImg").hidden = which !== "still";
     $("demoCanvas").hidden = which !== "demo";
+    resetView(); // new source -> zoom back out, recenter
   }
   function stopStream() {
     if (S.stream) { S.stream.getTracks().forEach(function (t) { t.stop(); }); S.stream = null; }
@@ -322,12 +324,15 @@
 
   // ------------------------------------------------------------ tap mechanics
   function mediaTransform() {
-    // maps between stage display px and media natural px (object-fit: contain)
+    // maps between stage display px and media natural px.
+    // Zoom: the view shows natural coords centered at (cx, cy) scaled by
+    // base*z, so taps, markers, and the media rect all share one mapping.
     var r = stage.getBoundingClientRect();
     var mw = S.mediaSize.w, mh = S.mediaSize.h;
-    var scale = Math.min(r.width / mw, r.height / mh);
-    var dw = mw * scale, dh = mh * scale;
-    return { scale: scale, ox: (r.width - dw) / 2, oy: (r.height - dh) / 2, r: r };
+    var scale = Math.min(r.width / mw, r.height / mh) * S.view.z;
+    var cx = S.view.cx == null ? mw / 2 : S.view.cx;
+    var cy = S.view.cy == null ? mh / 2 : S.view.cy;
+    return { scale: scale, ox: r.width / 2 - cx * scale, oy: r.height / 2 - cy * scale, r: r };
   }
   function clientToNatural(clientX, clientY) {
     var t = mediaTransform();
@@ -339,18 +344,120 @@
     return [t.ox + u * t.scale, t.oy + v * t.scale];
   }
 
+  // ---- stage zoom/pan -------------------------------------------------------
+  // The media elements are laid out from the SAME mapping the taps use, so a
+  // zoomed tap is exactly as accurate as an unzoomed one — this is the
+  // precision tool for small/distant points.
+  function layoutMedia() {
+    if (!S.mediaSize) return;
+    var t = mediaTransform();
+    var mw = S.mediaSize.w, mh = S.mediaSize.h;
+    ["liveVideo", "stillImg", "demoCanvas"].forEach(function (id) {
+      var el = $(id);
+      el.style.left = t.ox + "px";
+      el.style.top = t.oy + "px";
+      el.style.right = "auto"; el.style.bottom = "auto";
+      el.style.width = (mw * t.scale) + "px";
+      el.style.height = (mh * t.scale) + "px";
+    });
+    renderMarkers();
+  }
+  function resetView() {
+    S.view = { z: 1, cx: null, cy: null };
+    layoutMedia();
+  }
+  function clampView() {
+    var mw = S.mediaSize.w, mh = S.mediaSize.h;
+    if (S.view.z <= 1) { S.view.z = 1; S.view.cx = null; S.view.cy = null; return; }
+    S.view.z = Math.min(8, S.view.z);
+    var cx = S.view.cx == null ? mw / 2 : S.view.cx;
+    var cy = S.view.cy == null ? mh / 2 : S.view.cy;
+    S.view.cx = Math.max(0, Math.min(mw, cx));
+    S.view.cy = Math.max(0, Math.min(mh, cy));
+  }
+  // Zoom about a display point (dx, dy in stage px), keeping the natural point
+  // under the cursor fixed.
+  function zoomAt(dx, dy, factor) {
+    if (!S.mediaSize) return;
+    var t = mediaTransform();
+    var n = clientToNatural(dx + t.r.left, dy + t.r.top); // natural pt under cursor (old view)
+    S.view.z = Math.max(1, Math.min(8, S.view.z * factor));
+    if (S.view.z <= 1) { S.view.cx = null; S.view.cy = null; }
+    else {
+      var base = Math.min(t.r.width / S.mediaSize.w, t.r.height / S.mediaSize.h);
+      var s2 = base * S.view.z;
+      S.view.cx = n[0] - (dx - t.r.width / 2) / s2;
+      S.view.cy = n[1] - (dy - t.r.height / 2) / s2;
+    }
+    clampView(); layoutMedia();
+  }
+
+  // Tap = press-and-release without dragging; drag = pan (when zoomed).
+  var pdown = null;
+  function stageTargetOk(ev) { return !(ev.target.closest && ev.target.closest(".zoomctl")); }
   stage.addEventListener("pointerdown", function (ev) {
+    if (!stageTargetOk(ev)) return;
     if (!S.source || !S.mediaSize) return;
+    ev.preventDefault();
+    pdown = { x: ev.clientX, y: ev.clientY, cx: S.view.cx, cy: S.view.cy,
+              moved: false, id: ev.pointerId };
+    if (stage.setPointerCapture) { try { stage.setPointerCapture(ev.pointerId); } catch (e) {} }
+  });
+  stage.addEventListener("pointermove", function (ev) {
+    if (!pdown || ev.pointerId !== pdown.id) return;
+    var dx = ev.clientX - pdown.x, dy = ev.clientY - pdown.y;
+    if (!pdown.moved && Math.hypot(dx, dy) > 6) pdown.moved = true;
+    if (pdown.moved && S.view.z > 1 && S.mediaSize) {
+      var t = mediaTransform();
+      var mw = S.mediaSize.w, mh = S.mediaSize.h;
+      S.view.cx = (pdown.cx == null ? mw / 2 : pdown.cx) - dx / t.scale;
+      S.view.cy = (pdown.cy == null ? mh / 2 : pdown.cy) - dy / t.scale;
+      clampView(); layoutMedia();
+    }
+  });
+  function endPointer(ev) {
+    if (!pdown || ev.pointerId !== pdown.id) return;
+    var wasTap = !pdown.moved;
+    pdown = null;
+    if (!wasTap || !S.mediaSize) return;
+    var n = clientToNatural(ev.clientX, ev.clientY);
+    if (n[0] < 0 || n[1] < 0 || n[0] > S.mediaSize.w || n[1] > S.mediaSize.h) return;
     if (!S.tapping) {
       // Never silently swallow a tap: tell the user what to do first.
       if (S.screen === 2) $("tapHint").textContent = "👆 Click a named point above first, then tap it in the image.";
       return;
     }
-    ev.preventDefault();
-    var n = clientToNatural(ev.clientX, ev.clientY);
-    if (n[0] < 0 || n[1] < 0 || n[0] > S.mediaSize.w || n[1] > S.mediaSize.h) return;
     handleTap(n);
+  }
+  stage.addEventListener("pointerup", endPointer);
+  stage.addEventListener("pointercancel", function (ev) { if (pdown && ev.pointerId === pdown.id) pdown = null; });
+  stage.addEventListener("dblclick", function (ev) {
+    if (!stageTargetOk(ev) || !S.mediaSize) return;
+    var r = stage.getBoundingClientRect();
+    if (S.view.z > 1) { resetView(); }
+    else zoomAt(ev.clientX - r.left, ev.clientY - r.top, 3);
   });
+  stage.addEventListener("wheel", function (ev) {
+    if (!S.mediaSize) return;
+    ev.preventDefault();
+    var r = stage.getBoundingClientRect();
+    zoomAt(ev.clientX - r.left, ev.clientY - r.top, ev.deltaY < 0 ? 1.25 : 1 / 1.25);
+  }, { passive: false });
+
+  $("zoomInBtn").addEventListener("click", function () {
+    var r = stage.getBoundingClientRect();
+    zoomAt(r.width / 2, r.height / 2, 1.5);
+  });
+  $("zoomOutBtn").addEventListener("click", function () {
+    var r = stage.getBoundingClientRect();
+    zoomAt(r.width / 2, r.height / 2, 1 / 1.5);
+  });
+  $("zoomResetBtn").addEventListener("click", resetView);
+  $("fsBtn").addEventListener("click", function () {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (stage.requestFullscreen) stage.requestFullscreen().catch(function () {});
+  });
+  document.addEventListener("fullscreenchange", function () { layoutMedia(); });
 
   function armTap(kind, hintText) {
     S.tapping = kind;
@@ -801,7 +908,7 @@
   function round2(x) { return Math.round(x * 100) / 100; }
   function round3(x) { return Math.round(x * 1000) / 1000; }
 
-  window.addEventListener("resize", function () { renderMarkers(); });
+  window.addEventListener("resize", function () { layoutMedia(); });
 
   // ------------------------------------------------------------ init
   restore();

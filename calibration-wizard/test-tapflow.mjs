@@ -43,6 +43,8 @@ const documentStub = {
   createElement: (tag) => makeEl("new:" + tag),
   querySelectorAll: () => [],
   querySelector: () => null,
+  addEventListener() {}, removeEventListener() {},
+  exitFullscreen() {}, get fullscreenElement() { return null; },
 };
 const store = {};
 const windowStub = {
@@ -61,7 +63,9 @@ let src = fs.readFileSync(path.join(__dirname, "wizard.js"), "utf8");
 const initMarker = "  // ------------------------------------------------------------ init";
 if (!src.includes(initMarker)) { console.error("FAIL: init marker not found"); process.exit(1); }
 src = src.replace(initMarker,
-  "  window.__hook = { S: S, addRef: addRef, disarmTap: disarmTap, armTap: armTap, buildPresets: buildPresets, restore: restore };\n" + initMarker);
+  "  window.__hook = { S: S, addRef: addRef, disarmTap: disarmTap, armTap: armTap, buildPresets: buildPresets, restore: restore,\n" +
+  "    mediaTransform: mediaTransform, clientToNatural: clientToNatural, naturalToDisplay: naturalToDisplay,\n" +
+  "    zoomAt: zoomAt, resetView: resetView, layoutMedia: layoutMedia };\n" + initMarker);
 const sandbox = { window: windowStub, document: documentStub, localStorage: windowStub.localStorage,
                   navigator: {}, alert: () => {} };
 sandbox.window.window = sandbox.window;
@@ -108,15 +112,27 @@ S.activePreset = null; S.tapping = "ref";
 H.addRef([10, 10]);
 check("unarmed tap adds nothing", S.refs.length === 2);
 
-// 5. stage tap with nothing armed nudges the user instead of dying silently
+// 5. stage tap (press + release, no drag) with nothing armed nudges the user
 S.screen = 2; S.tapping = null;
 S.source = "demo"; S.mediaSize = { w: 1280, h: 720 };
 const stage = documentStub.getElementById("tapStage");
 const hint = documentStub.getElementById("tapHint");
 hint.textContent = "";
-stage._fire("pointerdown", { preventDefault() {}, clientX: 400, clientY: 300 });
+const pd = { preventDefault() {}, clientX: 400, clientY: 300, target: stage };
+stage._fire("pointerdown", pd);
+stage._fire("pointerup", pd);
 check("unarmed stage tap shows guidance",
   /click a named point/i.test(hint.textContent));
+
+// 5b. a drag is a pan, not a tap: armed tap must NOT fire after dragging
+S.activePreset = "box-l"; S.tapping = "ref";
+const nRefsBefore = S.refs.length;
+const pd2 = { preventDefault() {}, clientX: 100, clientY: 100, target: stage };
+stage._fire("pointerdown", pd2);
+stage._fire("pointermove", { clientX: 160, clientY: 100, target: stage }); // 60px drag
+stage._fire("pointerup", { clientX: 160, clientY: 100, target: stage });
+check("drag does not place a tap", S.refs.length === nRefsBefore);
+check("drag at zoom 1 does not move view", S.view.z === 1);
 
 // 6. stale refs (preset ids from an older pack geometry) are pruned on restore
 S.refs = [];
@@ -135,6 +151,40 @@ check("stale g-16 pruned", !ids.includes("g-16"));
 check("stale g-26 pruned", !ids.includes("g-26"));
 check("valid g-0 kept", ids.includes("g-0"));
 check("custom point kept", ids.includes("custom-123"));
+
+// 7. zoom math: cursor-anchored zoom + exact tap round-trip under zoom
+S.mediaSize = { w: 1280, h: 720 };
+H.resetView();
+const beforeZoom = H.clientToNatural(500, 200);
+H.zoomAt(500, 200, 2.5);
+check("zoom factor applied", Math.abs(S.view.z - 2.5) < 1e-9);
+const afterZoom = H.clientToNatural(500, 200);
+check("zoom keeps cursor-anchored point fixed",
+  Math.abs(beforeZoom[0] - afterZoom[0]) < 1e-6 && Math.abs(beforeZoom[1] - afterZoom[1]) < 1e-6);
+let rtOk = true;
+[[0, 0], [1280, 720], [640, 360], [100, 700], [1279.4, 0.5]].forEach(function (p) {
+  const d = H.naturalToDisplay(p[0], p[1]);
+  const n = H.clientToNatural(d[0], d[1]); // stub stage rect has left/top 0
+  if (Math.abs(n[0] - p[0]) > 1e-6 || Math.abs(n[1] - p[1]) > 1e-6) rtOk = false;
+});
+check("tap mapping round-trips exactly under zoom", rtOk);
+H.zoomAt(400, 300, 100);
+check("zoom clamps at 8x", S.view.z === 8);
+H.zoomAt(400, 300, 0.001);
+check("zoom out clamps at 1x and recenters", S.view.z === 1 && S.view.cx === null);
+// layoutMedia drives the media rect from the same mapping the taps use
+H.resetView();
+const vid = documentStub.getElementById("liveVideo");
+check("media rect matches tap mapping",
+  vid.style.width === "800px" && vid.style.left === "0px" &&
+  vid.style.height === "450px" && vid.style.top === "75px");
+// zoom buttons + double-click
+documentStub.getElementById("zoomInBtn")._fire("click", {});
+check("zoom-in button", Math.abs(S.view.z - 1.5) < 1e-9);
+stage._fire("dblclick", { clientX: 500, clientY: 200, target: stage });
+check("double-click resets zoom", S.view.z === 1);
+stage._fire("dblclick", { clientX: 500, clientY: 200, target: stage });
+check("double-click zooms to 3x", Math.abs(S.view.z - 3) < 1e-9);
 
 console.log(fail === 0 ? `\n${pass} passed, 0 failed` : `\n${pass} passed, ${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
