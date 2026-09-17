@@ -81,8 +81,18 @@
       nav.appendChild(d);
     });
     window.scrollTo(0, 0);
+    // The camera view follows the user: steps 2 (tap), 4 (height), 5 (verify)
+    // each have a .stage-slot — the single live view moves into the visible one.
+    // (Moving a playing <video> in the DOM does not restart it.)
+    var slot = document.querySelector('.screen[data-screen="' + i + '"] .stage-slot');
+    var st = $("tapStage");
+    if (slot && st && st.parentNode !== slot) {
+      slot.appendChild(st);
+      renderMarkers();
+    }
     if (i === 2) { renderPresets(); renderRefs(); drawDemo(); }
     if (i === 3) renderSolve();
+    if (i === 4) drawDemo();
     if (i === 5) drawDemo();
     if (i === 6) renderProfile();
   }
@@ -499,8 +509,16 @@
   }
 
   // ------------------------------------------------------------ height scale
+  function needSource(statusEl) {
+    if (!S.source) {
+      statusEl.textContent = "No camera yet — go back to step 2 and pick Live camera, a still photo, or the demo cage.";
+      return false;
+    }
+    return true;
+  }
   $("tapBaseBtn").addEventListener("click", function () {
     if (!S.solve) { $("heightStatus").textContent = "Solve the ground mapping first."; return; }
+    if (!needSource($("heightStatus"))) return;
     if (S.source === "demo") drawDemo();
     armTap("heightBase", "tap the BASE of the marker (ground level)");
   });
@@ -529,6 +547,7 @@
   // ------------------------------------------------------------ verification
   $("tapBallBtn").addEventListener("click", function () {
     if (!S.solve) { $("verifyHint").textContent = "Solve the ground mapping first."; return; }
+    if (!needSource($("verifyHint"))) return;
     if (S.source === "demo") drawDemo();
     armTap("verifyBall", "tap the ball in the image");
   });
