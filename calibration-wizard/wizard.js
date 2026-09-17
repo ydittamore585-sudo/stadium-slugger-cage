@@ -715,10 +715,10 @@
   $("tapTopBtn").addEventListener("click", function () {
     if (S.pendingBase) armTap("heightTop", "tap the TOP of the marker");
   });
-  // quick-set the known marker height: 4 ft wall seam/receptacle,
-  // or the top of the bottom window pane (47", measured 2026-09-17)
-  $("markSeamBtn").addEventListener("click", function () { $("markerH").value = "4"; });
+  // quick-set the known marker height: top of the bottom window pane (47") or
+  // top of the second pane (69.5"); measured 2026-09-17, same on both doors
   $("markWindowBtn").addEventListener("click", function () { $("markerH").value = (47 / 12).toFixed(3); });
+  $("markWindow2Btn").addEventListener("click", function () { $("markerH").value = (69.5 / 12).toFixed(3); });
 
   function renderHeight() {
     var list = $("heightList");
