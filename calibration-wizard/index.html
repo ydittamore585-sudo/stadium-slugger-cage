@@ -114,8 +114,9 @@
         <button class="btn small" id="doorDirBtn">Doors run: toward pitcher</button>
       </div>
       <p class="hint">Garage set: door edges pre-measured at 0 / 10 / 16 / 26 ft along the
-        wall (plate center even with the first edge). No tape measure — just tap each
-        named point in the picture. Flip the toggles if the wall is on the other side.</p>
+        wall (plate center even with the first edge), plus the batter's box inside
+        edges, 3 ft apart. No tape measure — just tap each named point in the picture.
+        Flip the toggles if the wall is on the other side.</p>
     </div>
 
     <div class="card">
@@ -178,8 +179,12 @@
     <div class="stage-slot"></div>
     <div class="card">
       <label>Marker height (ft) <input id="markerH" type="number" step="0.1" min="0.3" max="10" value="4"></label>
+      <div class="row wrap">
+        <button class="btn small" id="markSeamBtn">4 ft: wall seam</button>
+        <button class="btn small" id="markBatBtn">3 ft: 36&Prime; bat</button>
+      </div>
       <p class="hint">Your garage: the plywood seam and receptacle sit at 4 ft — tap the ground
-        below one, then tap it directly.</p>
+        below one, then tap it directly. Or stand the 36&Prime; bat up and use 3 ft.</p>
       <div class="row wrap">
         <button class="btn small primary" id="tapBaseBtn">Tap base…</button>
         <button class="btn small primary" id="tapTopBtn" disabled>Tap top…</button>

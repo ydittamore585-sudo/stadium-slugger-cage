@@ -99,7 +99,12 @@ cage" pack keeps the old cone-marker flow for other cages):
   either clears tapped refs (fail-closed: stale points never mix with a new
   frame).
 - Height default is **4 ft** (plywood seam + receptacle height on the wall);
-  the 2 ft glass door panels are a backup known-height marker.
+  the 2 ft glass door panels are a backup known-height marker. The user's 36"
+  bat is a portable alternative: one-tap quick-set buttons switch the marker
+  height between 4 ft (seam) and 3 ft (bat).
+- The batter's boxes are a fixed 3 ft apart (inside edge to inside edge), so
+  the pack includes "Box inside edge L/R" at (0, ∓1.5 ft) — a known lateral
+  reference right at the plate, where accuracy matters most.
 - The synthetic demo draws the wall, door divisions, and the 4 ft seam line
   so the user can verify point placement before going to the real camera.
 

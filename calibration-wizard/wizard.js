@@ -406,6 +406,10 @@
           world: [ft2m(x), ft2m(gy)],
         });
       });
+      // batter's boxes: 3 ft between the inside edges -> y = +/-1.5 ft,
+      // tapped on the inside chalk line even with plate center (x = 0)
+      list.push({ id: "box-l", label: "Box inside edge L", world: [0, ft2m(-1.5)] });
+      list.push({ id: "box-r", label: "Box inside edge R", world: [0, ft2m(1.5)] });
     } else {
       [10, 15, 20].forEach(function (ft) {
         var d = ft2m(ft);
@@ -587,6 +591,9 @@
   $("tapTopBtn").addEventListener("click", function () {
     if (S.pendingBase) armTap("heightTop", "tap the TOP of the marker");
   });
+  // quick-set the known marker height: 4 ft wall seam/receptacle, or the 36" bat
+  $("markSeamBtn").addEventListener("click", function () { $("markerH").value = "4"; });
+  $("markBatBtn").addEventListener("click", function () { $("markerH").value = "3"; });
 
   function renderHeight() {
     var list = $("heightList");
