@@ -63,9 +63,15 @@
       var d = JSON.parse(raw);
       if (d.cage) S.cage = d.cage;
       if (d.camera) S.camera = d.camera;
-      if (d.refs) S.refs = d.refs;
       if (d.pack) S.pack = d.pack;
       if (d.garage) S.garage = d.garage;
+      if (d.refs) {
+        // Drop refs whose preset no longer exists (pack geometry updates) —
+        // a stale world coordinate would silently poison the solve.
+        var valid = {};
+        buildPresets().forEach(function (p) { valid[p.id] = true; });
+        S.refs = d.refs.filter(function (r) { return valid[r.id] || r.id.indexOf("custom-") === 0; });
+      }
       if (d.heightSamples) S.heightSamples = d.heightSamples;
       if (d.verification) S.verification = d.verification;
     } catch (e) { /* ignore corrupt state */ }
@@ -249,7 +255,7 @@
     // plus the 4 ft plywood seam line
     if (S.pack === "garage") {
       var gyM = S.garage.side * ft2m(5), wallTopM = ft2m(8), seamM = ft2m(4);
-      var x0 = S.garage.dir > 0 ? 0 : -ft2m(26), x1 = S.garage.dir > 0 ? ft2m(26) : 0;
+      var x0 = S.garage.dir > 0 ? 0 : -ft2m(26.5), x1 = S.garage.dir > 0 ? ft2m(26.5) : 0;
       var wc = "rgba(255,200,100,0.6)";
       line(x0, gyM, 0, x1, gyM, 0, wc, 2);
       line(x0, gyM, wallTopM, x1, gyM, wallTopM, wc, 1);
@@ -386,7 +392,8 @@
 
   // ------------------------------------------------------------ reference points
   // Door/wall/door layout along the garage wall, in feet from the plate station.
-  var GARAGE_DOORS_FT = [[0, "Door edge @ plate"], [10, "Door 1 end"], [16, "Wall end"], [26, "Door 2 end"]];
+  // Measured 2026-09-17: 10' door, 6.5' wall, 10' door (26.5' total run).
+  var GARAGE_DOORS_FT = [[0, "Door edge @ plate"], [10, "Door 1 end"], [16.5, "Wall end"], [26.5, "Door 2 end"]];
   function buildPresets() {
     var L = S.cage.lengthM, Wd = S.cage.widthM;
     var list = [
@@ -401,7 +408,7 @@
     if (S.pack === "garage") {
       // User's pre-measured setup: wall along one side of the cage at the cage
       // edge (10 ft wide cage -> |y| = 5 ft). Plate center even with the first
-      // door edge; then 10' door, 6' wall, 10' door along the wall.
+      // door edge; then 10' door, 6.5' wall, 10' door along the wall.
       var gy = S.garage.side * 5; // ft, lateral
       GARAGE_DOORS_FT.forEach(function (pair) {
         var fx = pair[0], x = S.garage.dir * fx;

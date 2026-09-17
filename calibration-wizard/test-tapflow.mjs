@@ -61,7 +61,7 @@ let src = fs.readFileSync(path.join(__dirname, "wizard.js"), "utf8");
 const initMarker = "  // ------------------------------------------------------------ init";
 if (!src.includes(initMarker)) { console.error("FAIL: init marker not found"); process.exit(1); }
 src = src.replace(initMarker,
-  "  window.__hook = { S: S, addRef: addRef, disarmTap: disarmTap, armTap: armTap, buildPresets: buildPresets };\n" + initMarker);
+  "  window.__hook = { S: S, addRef: addRef, disarmTap: disarmTap, armTap: armTap, buildPresets: buildPresets, restore: restore };\n" + initMarker);
 const sandbox = { window: windowStub, document: documentStub, localStorage: windowStub.localStorage,
                   navigator: {}, alert: () => {} };
 sandbox.window.window = sandbox.window;
@@ -117,6 +117,24 @@ hint.textContent = "";
 stage._fire("pointerdown", { preventDefault() {}, clientX: 400, clientY: 300 });
 check("unarmed stage tap shows guidance",
   /click a named point/i.test(hint.textContent));
+
+// 6. stale refs (preset ids from an older pack geometry) are pruned on restore
+S.refs = [];
+sandbox.window.localStorage.setItem("cageWizardState.v1", JSON.stringify({
+  pack: "garage",
+  refs: [
+    { id: "g-0", label: "Door edge @ plate (0 ft)", image: [1258, 532], world: [0, 1.524] },
+    { id: "g-16", label: "Wall end (16 ft)", image: [609, 363], world: [4.8768, 1.524] },
+    { id: "g-26", label: "Door 2 end (26 ft)", image: [475, 331], world: [7.9248, 1.524] },
+    { id: "custom-123", label: "Custom (16.4, 0 ft)", image: [1, 1], world: [5, 0] },
+  ],
+}));
+H.restore();
+const ids = S.refs.map((r) => r.id);
+check("stale g-16 pruned", !ids.includes("g-16"));
+check("stale g-26 pruned", !ids.includes("g-26"));
+check("valid g-0 kept", ids.includes("g-0"));
+check("custom point kept", ids.includes("custom-123"));
 
 console.log(fail === 0 ? `\n${pass} passed, 0 failed` : `\n${pass} passed, ${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
