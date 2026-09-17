@@ -715,9 +715,11 @@
   $("tapTopBtn").addEventListener("click", function () {
     if (S.pendingBase) armTap("heightTop", "tap the TOP of the marker");
   });
-  // quick-set the known marker height: 4 ft wall seam/receptacle, or the 36" bat
+  // quick-set the known marker height: 4 ft wall seam/receptacle, the 36" bat,
+  // or the top of the bottom window pane (47", measured 2026-09-17)
   $("markSeamBtn").addEventListener("click", function () { $("markerH").value = "4"; });
   $("markBatBtn").addEventListener("click", function () { $("markerH").value = "3"; });
+  $("markWindowBtn").addEventListener("click", function () { $("markerH").value = (47 / 12).toFixed(3); });
 
   function renderHeight() {
     var list = $("heightList");
