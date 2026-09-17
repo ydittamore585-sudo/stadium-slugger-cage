@@ -511,17 +511,108 @@ btnStop.addEventListener("click", stopSession);
 btnDownload.addEventListener("click", downloadSession);
 
 /* ------------------------------------------------------------------ */
-/* Boot                                                                */
+/* Boot: camera source picker + remote (cast) support                  */
 /* ------------------------------------------------------------------ */
-initCamera().then(function () {
-  btnStart.disabled = false;
-  statusEl.textContent = "Camera ready";
-}).catch(function (err) {
-  statusEl.textContent = "Camera blocked — allow access and reload";
-  statusEl.className = "status idle";
-  document.getElementById("camera-hint").textContent =
-    "Camera access was denied. Allow camera permission and reload the page.";
+var remoteMode = false;
+var localInited = false;
+
+function setSrcActive(id) {
+  ["src-local", "btn-broadcast", "btn-watch"].forEach(function (x) {
+    var b = document.getElementById(x);
+    if (b) b.classList.toggle("active", x === id);
+  });
+}
+
+function setProfileWarning(msg) {
+  var w = document.getElementById("profile-warn");
+  if (w) w.textContent = msg || "";
+}
+
+function selectLocal() {
+  setSrcActive("src-local");
+  var hint = document.getElementById("camera-hint");
+  if (hint && !remoteMode) hint.style.display = "";
+  if (localInited || remoteMode) return;
+  localInited = true;
+  btnStart.disabled = true;
+  initCamera().then(function () {
+    btnStart.disabled = false;
+    statusEl.textContent = "Camera ready";
+  }).catch(function () {
+    statusEl.textContent = "Camera blocked — allow access and reload";
+    document.getElementById("camera-hint").textContent =
+      "Camera access was denied. Allow camera permission and reload the page.";
+  });
+}
+
+document.getElementById("src-local").addEventListener("click", selectLocal);
+["btn-broadcast", "btn-watch"].forEach(function (id) {
+  document.getElementById(id).addEventListener("click", function () { setSrcActive(id); });
 });
-btnStart.disabled = true;
+
+// Called by cast.js when the phone's stream arrives.
+window.SessionApp = {
+  onRemoteStream: function (stream) {
+    remoteMode = true;
+    if (state.stream) {
+      try { state.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    }
+    state.stream = stream;
+    video.srcObject = stream;
+    video.onloadedmetadata = function () {
+      overlay.width = video.videoWidth || 1280;
+      overlay.height = video.videoHeight || 720;
+    };
+    if (video.readyState >= 1) {
+      overlay.width = video.videoWidth || 1280;
+      overlay.height = video.videoHeight || 720;
+    }
+    btnStart.disabled = false;
+    statusEl.textContent = "Phone camera connected — ready";
+    document.getElementById("camera-hint").innerHTML =
+      "Viewing the phone's camera — analysis runs on this laptop.<br>" +
+      "Load the phone's calibration file below for accurate numbers.";
+    setProfileWarning("Using the laptop calibration with the phone camera: numbers are approximate until you load the phone's own calibration export.");
+  },
+  loadProfile: function (p) {
+    if (!p || p.format !== "stadium-slugger/cage-calibration" ||
+        !p.homography || !p.homography.imageToGround) {
+      throw new Error("not a cage calibration profile");
+    }
+    PROFILE.homography = p.homography;
+    if (p.camera) {
+      PROFILE.camera = p.camera;
+      CAM.x = -p.camera.distanceBehindPlateM;
+      CAM.y = p.camera.sideOffsetM;
+      CAM.z = p.camera.heightM;
+    }
+    if (p.heightScale && p.heightScale.samples && p.heightScale.samples.length) {
+      var s = p.heightScale.samples;
+      PROFILE.heightScale.pxPerM = s.reduce(function (a, b) { return a + b.pxPerM; }, 0) / s.length;
+    }
+    PROFILE.verified = !!p.verified;
+    PROFILE.label = p.label || "custom";
+    profileInfoEl.textContent =
+      "Profile: " + PROFILE.label + " (verified=" + PROFILE.verified + ") loaded from file.";
+    setProfileWarning(p.verified ? "" : "Profile is not verified — numbers are uncalibrated estimates.");
+  }
+};
+
+document.getElementById("profile-file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var r = new FileReader();
+  r.onload = function () {
+    try {
+      window.SessionApp.loadProfile(JSON.parse(r.result));
+    } catch (e) {
+      setProfileWarning("Couldn't read that file — export JSON from the calibration wizard.");
+    }
+  };
+  r.readAsText(f);
+});
+
+// Default: this device's camera (previous behavior).
+selectLocal();
 
 })();

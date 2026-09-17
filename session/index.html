@@ -20,6 +20,31 @@
     <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
   </div>
 
+  <div id="source-picker">
+    <button id="src-local" class="src active">📷 This device's camera</button>
+    <button id="btn-broadcast" class="src">📡 Phone: broadcast camera</button>
+    <button id="btn-watch" class="src">📺 Laptop: watch phone</button>
+  </div>
+
+  <div id="cast-panel" class="hidden">
+    <div id="cast-status"></div>
+    <div id="cast-qr"></div>
+    <div id="cast-textwrap" class="hidden">
+      <textarea id="cast-text" readonly rows="4"></textarea>
+      <button id="btn-copy-code">Copy text</button>
+    </div>
+    <div id="cast-scan-wrap" class="hidden">
+      <video id="cast-scan-video" playsinline muted></video>
+      <canvas id="cast-scan-canvas" class="hidden"></canvas>
+    </div>
+    <div id="cast-paste-wrap" class="hidden">
+      <textarea id="cast-paste" rows="4" placeholder="Paste the code from the other device"></textarea>
+      <button id="btn-apply-code">Apply code</button>
+    </div>
+    <div id="cast-actions"></div>
+    <button id="btn-cast-close">Close</button>
+  </div>
+
   <div id="controls">
     <button id="btn-start" class="big">● Start Live Session</button>
     <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
@@ -42,9 +67,16 @@
   <details id="profile-details">
     <summary>Calibration profile</summary>
     <div id="profile-info">Loading…</div>
+    <label id="profile-load">Phone calibration file (wizard export):
+      <input type="file" id="profile-file" accept=".json,application/json">
+    </label>
+    <div id="profile-warn"></div>
   </details>
 </div>
 <script src="../calibration-wizard/calibration.js"></script>
+<script src="vendor/qrcode.min.js"></script>
+<script src="vendor/jsqr.min.js"></script>
+<script src="cast.js"></script>
 <script src="session.js"></script>
 </body>
 </html>

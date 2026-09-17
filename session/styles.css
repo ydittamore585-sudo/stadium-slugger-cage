@@ -52,3 +52,27 @@ h2 { font-size: 1.05rem; margin: 14px 0 8px; }
 video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background: #000; }
 #profile-details { margin-top: 16px; font-size: 0.82rem; color: #9fb0d0; }
 #profile-details summary { cursor: pointer; color: #cdd8ee; }
+#source-picker { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+#source-picker .src {
+  flex: 1; min-width: 150px; padding: 10px; border-radius: 10px;
+  border: 2px solid #2a3350; background: #141b2e; color: #cdd8ee;
+  font-size: 0.85rem; font-weight: 600; cursor: pointer;
+}
+#source-picker .src.active { border-color: #4ade80; color: #fff; }
+#cast-panel { background: #141b2e; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+#cast-status { font-weight: 600; margin-bottom: 10px; }
+#cast-qr { display: flex; justify-content: center; margin: 10px 0; background: #fff; border-radius: 8px; padding: 10px; }
+#cast-qr:empty { display: none; }
+#cast-textwrap textarea, #cast-paste-wrap textarea {
+  width: 100%; background: #0a0e1a; color: #9fb0d0; border: 1px solid #2a3350;
+  border-radius: 8px; font-size: 0.7rem; margin-bottom: 8px;
+}
+#cast-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close {
+  padding: 10px 14px; border-radius: 8px; border: none; cursor: pointer;
+  background: #2a5aa0; color: #fff; font-weight: 600;
+}
+#btn-cast-close { background: #2a3350; margin-top: 8px; }
+#cast-scan-video { width: 100%; border-radius: 8px; background: #000; }
+#profile-load { display: block; margin-top: 10px; }
+#profile-warn { color: #e8c84a; font-size: 0.82rem; margin-top: 6px; }
