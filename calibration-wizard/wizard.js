@@ -31,7 +31,7 @@
                           doorHFt: 8, win1In: 47, win2In: 69.5 };
   var S = {
     screen: 0,
-    cage: { lengthM: 7.92, widthM: 3.048, heightM: 3.05 },
+    cage: { lengthM: 9.144, widthM: 3.048, heightM: 3.05 },
     camera: { heightM: 1.40, distanceBehindPlateM: 4.00, sideOffsetM: 0 },
     pack: "garage",           // 'garage' = user's pre-measured reference set, 'generic'
     garage: Object.assign({}, GARAGE_DEFAULTS), // side: -1 wall on 3rd-base side, +1 on 1st-base side;
