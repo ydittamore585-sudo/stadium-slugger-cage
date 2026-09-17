@@ -49,5 +49,6 @@ h2 { font-size: 1.05rem; margin: 14px 0 8px; }
 .swing-card .nums { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.9rem; }
 .swing-card .nums b { color: #fff; }
 .swing-card .note { font-size: 0.78rem; color: #8a9bbd; margin-top: 6px; }
+video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background: #000; }
 #profile-details { margin-top: 16px; font-size: 0.82rem; color: #9fb0d0; }
 #profile-details summary { cursor: pointer; color: #cdd8ee; }

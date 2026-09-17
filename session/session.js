@@ -347,6 +347,7 @@ function renderSwing(entry) {
   var empty = swingLogEl.querySelector(".empty");
   if (empty) empty.remove();
   var div = document.createElement("div");
+  div.dataset.swingId = entry.id;
   var r = entry.result;
   if (r.tracked) {
     div.className = "swing-card tracked";
@@ -398,6 +399,32 @@ function loop(ts) {
 /* ------------------------------------------------------------------ */
 var clipToggle = document.getElementById("clip-toggle");
 var swingClips = []; // {id, blob}
+var downloadedClipIds = {}; // ids already saved to the folder
+
+function attachClipPlayer(swingId, blob) {
+  var url = URL.createObjectURL(blob);
+  // 1) Drop it in the folder immediately (Downloads).
+  try {
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "swing-" + swingId + ".webm";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    downloadedClipIds[swingId] = true;
+  } catch (e) { /* in-page player still works */ }
+  // 2) In-page replay on the swing card.
+  var card = swingLogEl.querySelector('[data-swing-id="' + swingId + '"]');
+  if (card && !card.querySelector("video.swing-clip")) {
+    var v = document.createElement("video");
+    v.controls = true;
+    v.playsInline = true;
+    v.preload = "metadata";
+    v.src = url;
+    v.className = "swing-clip";
+    card.appendChild(v);
+  }
+}
 
 function startSession() {
   state.swings = [];
@@ -439,7 +466,9 @@ function captureSwingClip(swingId) {
     var chunks = [];
     rec.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
     rec.onstop = function () {
-      swingClips.push({ id: swingId, blob: new Blob(chunks, { type: "video/webm" }) });
+      var blob = new Blob(chunks, { type: "video/webm" });
+      swingClips.push({ id: swingId, blob: blob });
+      attachClipPlayer(swingId, blob);
     };
     rec.start();
     setTimeout(function () { if (rec.state !== "inactive") rec.stop(); }, 3000);
@@ -467,8 +496,9 @@ function downloadSession() {
   b2.href = URL.createObjectURL(new Blob([JSON.stringify(log, null, 2)], { type: "application/json" }));
   b2.download = "cage-session-swings.json";
   b2.click();
-  // Per-swing clips, if any.
+  // Per-swing clips not already saved to the folder.
   swingClips.forEach(function (c) {
+    if (downloadedClipIds[c.id]) return;
     var a = document.createElement("a");
     a.href = URL.createObjectURL(c.blob);
     a.download = "swing-" + c.id + ".webm";
