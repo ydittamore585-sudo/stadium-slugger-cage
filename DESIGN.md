@@ -84,6 +84,29 @@ UI guidance: 6+ points spread across the cage beats 4 clustered ones; the
 Review step color-codes per-point reprojection (green < 2 px, amber 2–5 px,
 red > 5 px) and lets the user tap-to-delete outliers and re-solve.
 
+### 4.2a Garage reference set (user's cage — no tape measure)
+
+The user's cage sits alongside a garage wall with pre-measured geometry, so
+the wizard ships a **"My garage cage" reference pack** (default; "Generic
+cage" pack keeps the old cone-marker flow for other cages):
+
+- Wall runs along one side of the cage at the cage edge (|y| = 5 ft for the
+  10 ft wide cage). Plate center is even with the first door edge.
+- Door edges along the wall at **0 / 10 / 16 / 26 ft** from the plate station
+  (10' door, 6' wall, 10' door — exactly the 26 ft cage length).
+- Two toggles cover the unknowns without a rebuild: wall side (3rd-base /
+  1st-base) and door direction (toward pitcher / behind plate). Flipping
+  either clears tapped refs (fail-closed: stale points never mix with a new
+  frame).
+- Height default is **4 ft** (plywood seam + receptacle height on the wall);
+  the 2 ft glass door panels are a backup known-height marker.
+- The synthetic demo draws the wall, door divisions, and the 4 ft seam line
+  so the user can verify point placement before going to the real camera.
+
+World coordinates are pre-filled; the user only taps each named point in the
+image. The same degeneracy guards (§4.2) and verification protocol (§4.5)
+apply unchanged.
+
 ### 4.3 Reprojection error = the honesty metric
 
 For each reference point, error is measured **both ways**: world→image (pixels)

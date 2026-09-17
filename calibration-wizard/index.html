@@ -58,7 +58,7 @@
     <div class="card">
       <h2>Cage dimensions <span class="muted">(feet)</span></h2>
       <label>Length (plate → far net) <input id="cageLength" type="number" step="0.1" min="10" max="200" value="26"></label>
-      <label>Width <input id="cageWidth" type="number" step="0.1" min="3" max="65" value="12"></label>
+      <label>Width <input id="cageWidth" type="number" step="0.1" min="3" max="65" value="10"></label>
       <label>Height <span class="muted">(optional)</span> <input id="cageHeight" type="number" step="0.1" min="3" max="33" value="10"></label>
       <p class="hint">Your cage: 26 ft pitching distance. Measure plate → far net and adjust.</p>
     </div>
@@ -101,6 +101,21 @@
         <div id="tapLayer"></div>
         <div class="crosshair-hint" id="tapHint">tap a reference point</div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Reference set</h2>
+      <div class="row wrap">
+        <button class="btn small" id="packGarageBtn">🏠 My garage cage</button>
+        <button class="btn small" id="packGenericBtn">Generic cage</button>
+      </div>
+      <div class="row wrap" id="garageOpts">
+        <button class="btn small" id="wallSideBtn">Wall: 3rd-base side</button>
+        <button class="btn small" id="doorDirBtn">Doors run: toward pitcher</button>
+      </div>
+      <p class="hint">Garage set: door edges pre-measured at 0 / 10 / 16 / 26 ft along the
+        wall (plate center even with the first edge). No tape measure — just tap each
+        named point in the picture. Flip the toggles if the wall is on the other side.</p>
     </div>
 
     <div class="card">
@@ -162,7 +177,9 @@
       <strong>base</strong>, then its <strong>top</strong>.</p>
     <div class="stage-slot"></div>
     <div class="card">
-      <label>Marker height (ft) <input id="markerH" type="number" step="0.1" min="0.3" max="10" value="3"></label>
+      <label>Marker height (ft) <input id="markerH" type="number" step="0.1" min="0.3" max="10" value="4"></label>
+      <p class="hint">Your garage: the plywood seam and receptacle sit at 4 ft — tap the ground
+        below one, then tap it directly.</p>
       <div class="row wrap">
         <button class="btn small primary" id="tapBaseBtn">Tap base…</button>
         <button class="btn small primary" id="tapTopBtn" disabled>Tap top…</button>

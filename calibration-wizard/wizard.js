@@ -27,8 +27,11 @@
 
   var S = {
     screen: 0,
-    cage: { lengthM: 7.92, widthM: 3.66, heightM: 3.05 },
+    cage: { lengthM: 7.92, widthM: 3.048, heightM: 3.05 },
     camera: { heightM: 1.40, distanceBehindPlateM: 4.00, sideOffsetM: 0 },
+    pack: "garage",           // 'garage' = user's pre-measured reference set, 'generic'
+    garage: { side: -1, dir: 1 }, // side: -1 wall on 3rd-base side, +1 on 1st-base side;
+                                  // dir: +1 doors run toward pitcher, -1 behind plate
     refs: [],               // {id,label,image:[u,v] natural px,world:[x,y]}
     activePreset: null,
     solve: null,
@@ -47,7 +50,7 @@
   function save() {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify({
-        cage: S.cage, camera: S.camera, refs: S.refs,
+        cage: S.cage, camera: S.camera, refs: S.refs, pack: S.pack, garage: S.garage,
         heightSamples: S.heightSamples, verification: S.verification,
       }));
       $("saveState").textContent = "progress saved ✓ " + new Date().toLocaleTimeString();
@@ -61,6 +64,8 @@
       if (d.cage) S.cage = d.cage;
       if (d.camera) S.camera = d.camera;
       if (d.refs) S.refs = d.refs;
+      if (d.pack) S.pack = d.pack;
+      if (d.garage) S.garage = d.garage;
       if (d.heightSamples) S.heightSamples = d.heightSamples;
       if (d.verification) S.verification = d.verification;
     } catch (e) { /* ignore corrupt state */ }
@@ -240,6 +245,20 @@
     line(L, -Wd / 2, Hg, L, Wd / 2, Hg, c, 2);
     line(0, -Wd / 2, 0, L, -Wd / 2, 0, c, 2);
     line(0, Wd / 2, 0, L, Wd / 2, 0, c, 2);
+    // garage wall (only in garage pack): doors/wall/door along one side,
+    // plus the 4 ft plywood seam line
+    if (S.pack === "garage") {
+      var gyM = S.garage.side * ft2m(5), wallTopM = ft2m(8), seamM = ft2m(4);
+      var x0 = S.garage.dir > 0 ? 0 : -ft2m(26), x1 = S.garage.dir > 0 ? ft2m(26) : 0;
+      var wc = "rgba(255,200,100,0.6)";
+      line(x0, gyM, 0, x1, gyM, 0, wc, 2);
+      line(x0, gyM, wallTopM, x1, gyM, wallTopM, wc, 1);
+      line(x0, gyM, seamM, x1, gyM, seamM, "rgba(255,150,150,0.7)", 1);
+      GARAGE_DOORS_FT.forEach(function (pair) {
+        var ex = S.garage.dir * ft2m(pair[0]);
+        line(ex, gyM, 0, ex, gyM, wallTopM, wc, 2);
+      });
+    }
     // home plate pentagon
     (function () {
       var pts = [[0.216, -0.2159], [0.216, 0.2159], [0.108, 0.2159], [-0.216, 0], [0.108, -0.2159]];
@@ -361,6 +380,8 @@
   }
 
   // ------------------------------------------------------------ reference points
+  // Door/wall/door layout along the garage wall, in feet from the plate station.
+  var GARAGE_DOORS_FT = [[0, "Door edge @ plate"], [10, "Door 1 end"], [16, "Wall end"], [26, "Door 2 end"]];
   function buildPresets() {
     var L = S.cage.lengthM, Wd = S.cage.widthM;
     var list = [
@@ -372,15 +393,56 @@
       { id: "post-far-l", label: "Far post L", world: [L, -Wd / 2] },
       { id: "post-far-r", label: "Far post R", world: [L, Wd / 2] },
     ];
-    [10, 15, 20].forEach(function (ft) {
-      var d = ft2m(ft);
-      if (d <= L) list.push({ id: "mark-" + ft, label: ft + " ft marker", world: [d, 0] });
-    });
+    if (S.pack === "garage") {
+      // User's pre-measured setup: wall along one side of the cage at the cage
+      // edge (10 ft wide cage -> |y| = 5 ft). Plate center even with the first
+      // door edge; then 10' door, 6' wall, 10' door along the wall.
+      var gy = S.garage.side * 5; // ft, lateral
+      GARAGE_DOORS_FT.forEach(function (pair) {
+        var fx = pair[0], x = S.garage.dir * fx;
+        list.push({
+          id: "g-" + fx,
+          label: pair[1] + " (" + fx + " ft)",
+          world: [ft2m(x), ft2m(gy)],
+        });
+      });
+    } else {
+      [10, 15, 20].forEach(function (ft) {
+        var d = ft2m(ft);
+        if (d <= L) list.push({ id: "mark-" + ft, label: ft + " ft marker", world: [d, 0] });
+      });
+    }
     list.push({ id: "custom", label: "Custom…", custom: true });
     return list;
   }
 
+  function updatePackUI() {
+    $("packGarageBtn").classList.toggle("preset-on", S.pack === "garage");
+    $("packGenericBtn").classList.toggle("preset-on", S.pack === "generic");
+    var go = $("garageOpts");
+    go.hidden = S.pack !== "garage";
+    if (S.pack === "garage") {
+      $("wallSideBtn").textContent = "Wall: " + (S.garage.side < 0 ? "3rd-base side" : "1st-base side");
+      $("doorDirBtn").textContent = "Doors run: " + (S.garage.dir > 0 ? "toward pitcher" : "behind plate");
+    }
+  }
+  $("packGarageBtn").addEventListener("click", function () {
+    S.pack = "garage"; S.activePreset = null; save(); updatePackUI(); renderPresets();
+  });
+  $("packGenericBtn").addEventListener("click", function () {
+    S.pack = "generic"; S.activePreset = null; save(); updatePackUI(); renderPresets();
+  });
+  $("wallSideBtn").addEventListener("click", function () {
+    S.garage.side *= -1; S.refs = []; S.solve = null;
+    save(); updatePackUI(); renderPresets(); renderRefs();
+  });
+  $("doorDirBtn").addEventListener("click", function () {
+    S.garage.dir *= -1; S.refs = []; S.solve = null;
+    save(); updatePackUI(); renderPresets(); renderRefs();
+  });
+
   function renderPresets() {
+    updatePackUI();
     var row = $("presetRow");
     row.innerHTML = "";
     buildPresets().forEach(function (pr) {
