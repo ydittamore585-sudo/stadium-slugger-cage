@@ -334,7 +334,12 @@
   }
 
   stage.addEventListener("pointerdown", function (ev) {
-    if (!S.tapping || !S.source || !S.mediaSize) return;
+    if (!S.source || !S.mediaSize) return;
+    if (!S.tapping) {
+      // Never silently swallow a tap: tell the user what to do first.
+      if (S.screen === 2) $("tapHint").textContent = "👆 Click a named point above first, then tap it in the image.";
+      return;
+    }
     ev.preventDefault();
     var n = clientToNatural(ev.clientX, ev.clientY);
     if (n[0] < 0 || n[1] < 0 || n[0] > S.mediaSize.w || n[1] > S.mediaSize.h) return;
@@ -431,17 +436,17 @@
     }
   }
   $("packGarageBtn").addEventListener("click", function () {
-    S.pack = "garage"; S.activePreset = null; save(); updatePackUI(); renderPresets();
+    S.pack = "garage"; S.activePreset = null; disarmTap(); save(); updatePackUI(); renderPresets();
   });
   $("packGenericBtn").addEventListener("click", function () {
-    S.pack = "generic"; S.activePreset = null; save(); updatePackUI(); renderPresets();
+    S.pack = "generic"; S.activePreset = null; disarmTap(); save(); updatePackUI(); renderPresets();
   });
   $("wallSideBtn").addEventListener("click", function () {
-    S.garage.side *= -1; S.refs = []; S.solve = null;
+    S.garage.side *= -1; S.refs = []; S.solve = null; S.activePreset = null; disarmTap();
     save(); updatePackUI(); renderPresets(); renderRefs();
   });
   $("doorDirBtn").addEventListener("click", function () {
-    S.garage.dir *= -1; S.refs = []; S.solve = null;
+    S.garage.dir *= -1; S.refs = []; S.solve = null; S.activePreset = null; disarmTap();
     save(); updatePackUI(); renderPresets(); renderRefs();
   });
 
@@ -477,6 +482,11 @@
     // replace existing tap for the same preset id (re-tap = correction)
     S.refs = S.refs.filter(function (r) { return r.id !== pr.id || pr.custom; });
     S.refs.push({ id: pr.id, label: pr.label, image: [Math.round(n[0]), Math.round(n[1])], world: world });
+    // Disarm after every tap: the next tap must pick its own preset first.
+    // (Leaving the old preset armed made extra taps silently REPLACE the last
+    // point instead of adding a new one.)
+    disarmTap();
+    document.querySelectorAll("#presetRow .btn").forEach(function (b) { b.classList.remove("armed"); });
     renderRefs();
     save();
   }
