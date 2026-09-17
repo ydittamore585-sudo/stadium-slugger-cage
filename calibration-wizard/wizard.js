@@ -25,12 +25,16 @@
   function ft1(m) { return (m * FT_PER_M).toFixed(1); }   // meters -> "26.0" ft
   function in1(m) { return (m * IN_PER_M).toFixed(1); }   // meters -> "5.9" in
 
+  // Garage dimensions, editable on the reference-points screen (screen 2).
+  // Measured 2026-09-17: 10'3" doors, 6'6" center wall; window tops 47"/69.5".
+  var GARAGE_DEFAULTS = { side: -1, dir: 1, door1Ft: 10.25, centerFt: 6.5, door2Ft: 10.25,
+                          doorHFt: 8, win1In: 47, win2In: 69.5 };
   var S = {
     screen: 0,
     cage: { lengthM: 7.92, widthM: 3.048, heightM: 3.05 },
     camera: { heightM: 1.40, distanceBehindPlateM: 4.00, sideOffsetM: 0 },
     pack: "garage",           // 'garage' = user's pre-measured reference set, 'generic'
-    garage: { side: -1, dir: 1 }, // side: -1 wall on 3rd-base side, +1 on 1st-base side;
+    garage: Object.assign({}, GARAGE_DEFAULTS), // side: -1 wall on 3rd-base side, +1 on 1st-base side;
                                   // dir: +1 doors run toward pitcher, -1 behind plate
     refs: [],               // {id,label,image:[u,v] natural px,world:[x,y]}
     activePreset: null,
@@ -65,17 +69,19 @@
       if (d.cage) S.cage = d.cage;
       if (d.camera) S.camera = d.camera;
       if (d.pack) S.pack = d.pack;
-      if (d.garage) S.garage = d.garage;
-      if (d.refs) {
-        // Drop refs whose preset no longer exists (pack geometry updates) —
-        // a stale world coordinate would silently poison the solve.
-        var valid = {};
-        buildPresets().forEach(function (p) { valid[p.id] = true; });
-        S.refs = d.refs.filter(function (r) { return valid[r.id] || r.id.indexOf("custom-") === 0; });
-      }
+      if (d.garage) S.garage = Object.assign({}, GARAGE_DEFAULTS, d.garage);
+      if (d.refs) { S.refs = d.refs; pruneStaleRefs(); }
       if (d.heightSamples) S.heightSamples = d.heightSamples;
       if (d.verification) S.verification = d.verification;
     } catch (e) { /* ignore corrupt state */ }
+  }
+
+  // Drop refs whose preset no longer exists (pack geometry updates) — a stale
+  // world coordinate would silently poison the solve. Custom points are kept.
+  function pruneStaleRefs() {
+    var valid = {};
+    buildPresets().forEach(function (p) { valid[p.id] = true; });
+    S.refs = S.refs.filter(function (r) { return valid[r.id] || r.id.indexOf("custom-") === 0; });
   }
 
   // ------------------------------------------------------------ navigation
@@ -256,13 +262,14 @@
     // garage wall (only in garage pack): doors/wall/door along one side,
     // plus the 4 ft plywood seam line
     if (S.pack === "garage") {
-      var gyM = S.garage.side * ft2m(5), wallTopM = ft2m(8), seamM = ft2m(4);
-      var x0 = S.garage.dir > 0 ? 0 : -ft2m(26.5), x1 = S.garage.dir > 0 ? ft2m(26.5) : 0;
+      var edges = garageEdgesFt(), totalFt = edges[edges.length - 1][0];
+      var gyM = S.garage.side * ft2m(5), wallTopM = ft2m(S.garage.doorHFt), seamM = ft2m(4);
+      var x0 = S.garage.dir > 0 ? 0 : -ft2m(totalFt), x1 = S.garage.dir > 0 ? ft2m(totalFt) : 0;
       var wc = "rgba(255,200,100,0.6)";
       line(x0, gyM, 0, x1, gyM, 0, wc, 2);
       line(x0, gyM, wallTopM, x1, gyM, wallTopM, wc, 1);
       line(x0, gyM, seamM, x1, gyM, seamM, "rgba(255,150,150,0.7)", 1);
-      GARAGE_DOORS_FT.forEach(function (pair) {
+      edges.forEach(function (pair) {
         var ex = S.garage.dir * ft2m(pair[0]);
         line(ex, gyM, 0, ex, gyM, wallTopM, wc, 2);
       });
@@ -498,9 +505,14 @@
   }
 
   // ------------------------------------------------------------ reference points
-  // Door/wall/door layout along the garage wall, in feet from the plate station.
-  // Measured 2026-09-17: 10' door, 6.5' wall, 10' door (26.5' total run).
-  var GARAGE_DOORS_FT = [[0, "Door edge @ plate"], [10, "Door 1 end"], [16.5, "Wall end"], [26.5, "Door 2 end"]];
+  // Door/wall/door layout along the garage wall, in feet from the plate station,
+  // computed from the editable S.garage dimensions (screen 2).
+  function ftFmt(x) { return (+x.toFixed(2)).toString(); }
+  function garageEdgesFt() {
+    var g = S.garage;
+    var e1 = g.door1Ft, e2 = e1 + g.centerFt, e3 = e2 + g.door2Ft;
+    return [[0, "Door edge @ plate"], [e1, "Door 1 end"], [e2, "Wall end"], [e3, "Door 2 end"]];
+  }
   function buildPresets() {
     var L = S.cage.lengthM, Wd = S.cage.widthM;
     var list = [
@@ -515,13 +527,13 @@
     if (S.pack === "garage") {
       // User's pre-measured setup: wall along one side of the cage at the cage
       // edge (10 ft wide cage -> |y| = 5 ft). Plate center even with the first
-      // door edge; then 10' door, 6.5' wall, 10' door along the wall.
+      // door edge; door widths / center wall come from the editable dimensions.
       var gy = S.garage.side * 5; // ft, lateral
-      GARAGE_DOORS_FT.forEach(function (pair) {
+      garageEdgesFt().forEach(function (pair) {
         var fx = pair[0], x = S.garage.dir * fx;
         list.push({
-          id: "g-" + fx,
-          label: pair[1] + " (" + fx + " ft)",
+          id: "g-" + ftFmt(fx),
+          label: pair[1] + " (" + ftFmt(fx) + " ft)",
           world: [ft2m(x), ft2m(gy)],
         });
       });
@@ -548,7 +560,46 @@
       $("wallSideBtn").textContent = "Wall: " + (S.garage.side < 0 ? "3rd-base side" : "1st-base side");
       $("doorDirBtn").textContent = "Doors run: " + (S.garage.dir > 0 ? "toward pitcher" : "behind plate");
     }
+    syncGarageUI();
   }
+  // Keep every garage-derived label in sync with the editable dimensions:
+  // door-edge hint, dimension boxes, height quick-sets, height hint.
+  function syncGarageUI() {
+    var g = S.garage;
+    var e = garageEdgesFt().map(function (p) { return ftFmt(p[0]); });
+    var dh = $("garageDimsHint");
+    if (dh) dh.textContent = "Garage set: door edges at " + e.join(" / ") + " ft along the wall " +
+      "(plate center even with the first edge), plus the batter's box inside edges, 3 ft apart. " +
+      "No tape measure — just tap each named point in the picture. Flip the toggles if the wall " +
+      "is on the other side. Edit the dimensions above if your measurements change.";
+    [["dimDoor1", "door1Ft"], ["dimCenter", "centerFt"], ["dimDoor2", "door2Ft"],
+     ["dimDoorH", "doorHFt"], ["dimWin1", "win1In"], ["dimWin2", "win2In"]].forEach(function (pair) {
+      var el = $(pair[0]);
+      if (el && document.activeElement !== el) el.value = g[pair[1]];
+    });
+    var wb = $("markWindowBtn"), wb2 = $("markWindow2Btn");
+    if (wb) wb.innerHTML = g.win1In + "&Prime;: window top";
+    if (wb2) wb2.innerHTML = g.win2In + "&Prime;: 2nd window top";
+    var hh = $("heightHint");
+    if (hh) hh.textContent = "Your garage: the top of the bottom window pane is " + g.win1In +
+      "\u2033 and the top of the second pane is " + g.win2In +
+      "\u2033, same on both doors. Take one sample at each window, ideally at different doors, " +
+      "for a stronger height reading.";
+  }
+  // Editable garage dimensions: changing one re-derives every door-edge world
+  // coordinate, so taps made under the old geometry are pruned (re-tap them).
+  [["dimDoor1", "door1Ft"], ["dimCenter", "centerFt"], ["dimDoor2", "door2Ft"],
+   ["dimDoorH", "doorHFt"], ["dimWin1", "win1In"], ["dimWin2", "win2In"]].forEach(function (pair) {
+    $(pair[0]).addEventListener("change", function () {
+      var el = $(pair[0]);
+      var v = parseFloat(el.value);
+      if (!isFinite(v) || v <= 0) { el.value = S.garage[pair[1]]; return; }
+      S.garage[pair[1]] = v;
+      pruneStaleRefs();
+      S.solve = null; S.activePreset = null; disarmTap();
+      save(); syncGarageUI(); renderPresets(); renderRefs();
+    });
+  });
   $("packGarageBtn").addEventListener("click", function () {
     S.pack = "garage"; S.activePreset = null; disarmTap(); save(); updatePackUI(); renderPresets();
   });
@@ -715,10 +766,9 @@
   $("tapTopBtn").addEventListener("click", function () {
     if (S.pendingBase) armTap("heightTop", "tap the TOP of the marker");
   });
-  // quick-set the known marker height: top of the bottom window pane (47") or
-  // top of the second pane (69.5"); measured 2026-09-17, same on both doors
-  $("markWindowBtn").addEventListener("click", function () { $("markerH").value = (47 / 12).toFixed(3); });
-  $("markWindow2Btn").addEventListener("click", function () { $("markerH").value = (69.5 / 12).toFixed(3); });
+  // quick-set the known marker height from the editable window-top dimensions
+  $("markWindowBtn").addEventListener("click", function () { $("markerH").value = (S.garage.win1In / 12).toFixed(3); });
+  $("markWindow2Btn").addEventListener("click", function () { $("markerH").value = (S.garage.win2In / 12).toFixed(3); });
 
   function renderHeight() {
     var list = $("heightList");

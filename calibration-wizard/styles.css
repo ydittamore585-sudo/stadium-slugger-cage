@@ -186,6 +186,11 @@ input[type="number"], input[type="text"] {
   pointer-events: none;
 }
 .tap-stage.armed { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue); }
+.dimgrid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0 0.8rem;
+  margin-top: 0.4rem;
+}
+.dimgrid label { margin: 0.35rem 0; font-size: 0.88rem; }
 .tap-stage:fullscreen, .tap-stage:-webkit-full-screen { aspect-ratio: auto; }
 .zoomctl {
   position: absolute; top: 8px; right: 8px; z-index: 5;
