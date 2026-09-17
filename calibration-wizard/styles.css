@@ -1,0 +1,224 @@
+/* Stadium Slugger — Cage Calibration Wizard. Mobile-first, dark, big touch targets. */
+
+:root {
+  --bg: #0d1117;
+  --card: #161d27;
+  --line: #2a3442;
+  --text: #e8edf3;
+  --muted: #8b98a9;
+  --accent: #f5a623;   /* baseball amber */
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  padding-bottom: 3rem;
+}
+
+.app-header {
+  padding: 0.9rem 1rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: rgba(13, 17, 23, 0.95);
+  backdrop-filter: blur(6px);
+  z-index: 50;
+}
+.brand { font-weight: 800; font-size: 1.05rem; }
+.subtitle { color: var(--muted); font-size: 0.8rem; }
+
+.steps {
+  display: flex;
+  gap: 4px;
+  padding: 0.6rem 1rem 0;
+  position: sticky;
+  top: 64px;
+  background: var(--bg);
+  z-index: 40;
+}
+.steps .dot {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+}
+.steps .dot.done { background: var(--green); }
+.steps .dot.now { background: var(--accent); }
+
+main { padding: 0.5rem 1rem; max-width: 720px; margin: 0 auto; }
+.screen h1 { font-size: 1.35rem; margin: 0.8rem 0 0.4rem; }
+.lede { color: var(--muted); margin-top: 0; }
+.muted { color: var(--muted); font-weight: 400; font-size: 0.85em; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+  margin: 0.8rem 0;
+}
+.card h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+.card.honesty { border-color: #5a3d00; background: #1c1607; }
+
+.checklist { list-style: none; padding: 0; margin: 0.4rem 0; }
+.checklist li { padding: 0.3rem 0; }
+
+label { display: block; margin: 0.5rem 0; font-size: 0.95rem; }
+input[type="number"], input[type="text"] {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.6rem;
+  font-size: 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #0d1117;
+  color: var(--text);
+}
+.row { display: flex; gap: 0.6rem; margin: 0.8rem 0; align-items: center; }
+.row.split { justify-content: space-between; }
+.row.wrap { flex-wrap: wrap; }
+
+.btn {
+  border: 1px solid var(--line);
+  background: #212b38;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 0.7rem 1.1rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.btn:active { transform: scale(0.97); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1206; font-weight: 700; }
+.btn.ghost { background: transparent; }
+.btn.small { padding: 0.45rem 0.7rem; font-size: 0.9rem; }
+.btn.big { font-size: 1.15rem; padding: 0.9rem 1.4rem; width: 100%; }
+.btn.danger { border-color: var(--red); color: var(--red); background: transparent; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn.armed { outline: 3px solid var(--blue); }
+
+.pill {
+  display: inline-block;
+  background: #212b38;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+  vertical-align: middle;
+}
+
+.tag { border-radius: 6px; padding: 0.1rem 0.45rem; font-size: 0.85em; font-weight: 700; }
+.tag.warn { background: #3d2c00; color: var(--accent); border: 1px solid #7a5b00; }
+.tag.ok { background: #0d2b14; color: var(--green); border: 1px solid #1f6f31; }
+.tag.bad { background: #3d0d0d; color: var(--red); border: 1px solid #7a2020; }
+
+.error {
+  background: #3d0d0d;
+  border: 1px solid var(--red);
+  color: #ffb4ae;
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  margin: 0.8rem 0;
+}
+.hint { color: var(--muted); font-size: 0.85rem; }
+
+/* tap stage */
+.tap-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tap-stage video, .tap-stage img, .tap-stage canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+#tapLayer { position: absolute; inset: 0; }
+.tap-marker {
+  position: absolute;
+  width: 26px; height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  background: rgba(245, 166, 35, 0.25);
+  pointer-events: none;
+}
+.tap-marker .n {
+  position: absolute;
+  top: -22px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #1a1206;
+  font-size: 11px; font-weight: 800;
+  border-radius: 6px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.tap-marker.bad { border-color: var(--red); background: rgba(248, 81, 73, 0.25); }
+.tap-marker.bad .n { background: var(--red); color: #fff; }
+.crosshair-hint {
+  position: absolute;
+  bottom: 8px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.6);
+  border-radius: 999px;
+  padding: 0.25rem 0.8rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+.tap-stage.armed { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue); }
+
+.reflist { list-style: none; padding: 0; margin: 0.4rem 0; }
+.reflist li {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 0.5rem 0.2rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.92rem;
+}
+.reflist li:last-child { border-bottom: none; }
+.reflist .err-green { color: var(--green); font-weight: 700; }
+.reflist .err-amber { color: var(--accent); font-weight: 700; }
+.reflist .err-red { color: var(--red); font-weight: 700; }
+.reflist li.tappable { cursor: pointer; }
+
+.bigstats { display: flex; gap: 1.4rem; margin: 0.5rem 0; }
+.bigstats span { font-size: 1.7rem; font-weight: 800; display: block; }
+.bigstats label { color: var(--muted); font-size: 0.8rem; margin: 0; }
+
+.app-footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 1.5rem 0 0;
+}
+
+.preset-on { outline: 2px solid var(--accent); background: #3a2c10; }
+
+pre.profile-json {
+  background: #0d1117;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem;
+  overflow: auto;
+  max-height: 300px;
+  font-size: 0.75rem;
+}

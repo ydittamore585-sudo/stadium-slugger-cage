@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Stadium Slugger — Cage Calibration Wizard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">⚾ Stadium Slugger</div>
+  <div class="subtitle">Cage Edition · Calibration Wizard</div>
+</header>
+
+<nav class="steps" id="stepNav" aria-label="Calibration steps"></nav>
+
+<main id="app">
+
+  <!-- STEP 0 : intro -->
+  <section class="screen" data-screen="0">
+    <h1>Calibrate your cage <span class="muted">(once, ~10 min)</span></h1>
+    <p class="lede">Your phone sits on a tripod and never moves. You tell the wizard
+      where a few known points are in the camera view. From that, it learns to turn
+      <em>pixels</em> into <em>feet on your field</em> — the foundation every
+      tracked number stands on.</p>
+    <div class="card">
+      <h2>You'll need</h2>
+      <ul class="checklist">
+        <li>📱 Phone on a tripod, facing the cage <strong>(don't move it after this)</strong></li>
+        <li>📏 Tape measure — cage length × width, camera height</li>
+        <li>⚾ A ball, and something tall with a known height (bat on a tee, yardstick)</li>
+        <li>🚧 2–4 cones or marks at known distances (15 ft / 30 ft etc.) — optional but helps</li>
+      </ul>
+    </div>
+    <div class="card honesty">
+      <h2>The honesty contract</h2>
+      <ul>
+        <li>This wizard <strong>never invents numbers</strong>. If the evidence is thin, it says so.</li>
+        <li>Until verification passes, every projected number stays labeled
+          <span class="tag warn">uncalibrated estimate</span>.</li>
+        <li>Verification failing is a <em>result</em>, not an error — re-tap and try again.</li>
+      </ul>
+    </div>
+    <div class="row">
+      <button class="btn primary big" data-next>Start calibration →</button>
+    </div>
+    <div class="row">
+      <button class="btn ghost" id="loadProfileBtn">Load an existing profile</button>
+      <input type="file" id="loadProfileFile" accept="application/json,.json" hidden>
+    </div>
+  </section>
+
+  <!-- STEP 1 : measurements -->
+  <section class="screen" data-screen="1" hidden>
+    <h1>1 · Cage &amp; camera measurements</h1>
+    <p class="lede">Measure with the tape. Rough guesses cost you accuracy — the wizard
+      will tell you how much.</p>
+    <div class="card">
+      <h2>Cage dimensions <span class="muted">(feet)</span></h2>
+      <label>Length (plate → far net) <input id="cageLength" type="number" step="0.1" min="10" max="200" value="26"></label>
+      <label>Width <input id="cageWidth" type="number" step="0.1" min="3" max="65" value="12"></label>
+      <label>Height <span class="muted">(optional)</span> <input id="cageHeight" type="number" step="0.1" min="3" max="33" value="10"></label>
+      <p class="hint">Your cage: 26 ft pitching distance. Measure plate → far net and adjust.</p>
+    </div>
+    <div class="card">
+      <h2>Camera position <span class="muted">(feet)</span></h2>
+      <label>Camera height (lens → ground) <input id="camHeight" type="number" step="0.1" min="0.7" max="33" value="4.6"></label>
+      <label>Distance behind home plate <input id="camDist" type="number" step="0.1" min="1.5" max="130" value="13.1"></label>
+      <label>Side offset <span class="muted">(0 = centered, + = toward 1st base side)</span>
+        <input id="camSide" type="number" step="0.1" min="-33" max="33" value="0"></label>
+    </div>
+    <div id="measureError" class="error" hidden></div>
+    <div class="row split">
+      <button class="btn" data-prev>← Back</button>
+      <button class="btn primary" id="toCameraBtn">Set up camera →</button>
+    </div>
+  </section>
+
+  <!-- STEP 2 : reference points -->
+  <section class="screen" data-screen="2" hidden>
+    <h1>2 · Tap reference points <span class="pill" id="refCount">0 / 4 minimum</span></h1>
+    <p class="lede">Pick a known point below, then tap exactly where it appears in the
+      camera view. <strong>6+ points spread across the cage</strong> beats 4 clustered ones.</p>
+
+    <div class="card">
+      <h2>Camera source</h2>
+      <div class="row wrap">
+        <button class="btn small" id="liveCamBtn">📷 Live camera</button>
+        <button class="btn small" id="uploadBtn">🖼 Upload still</button>
+        <button class="btn small" id="demoBtn">🧪 Demo cage (no camera)</button>
+        <input type="file" id="stillFile" accept="image/*" hidden>
+      </div>
+      <p class="hint" id="camStatus">No camera yet — pick a source above. On a phone, use the live camera.</p>
+    </div>
+
+    <div class="tap-stage" id="tapStage">
+      <video id="liveVideo" playsinline muted hidden></video>
+      <img id="stillImg" hidden alt="cage still">
+      <canvas id="demoCanvas" hidden></canvas>
+      <div id="tapLayer"></div>
+      <div class="crosshair-hint" id="tapHint">tap a reference point</div>
+    </div>
+
+    <div class="card">
+      <h2>Which point are you tapping?</h2>
+      <div class="row wrap" id="presetRow"></div>
+      <div class="row" id="customRefRow" hidden>
+        <label>X (ft, + toward outfield) <input id="customX" type="number" step="0.1" value="16.4"></label>
+        <label>Y (ft, + toward right field) <input id="customY" type="number" step="0.1" value="0"></label>
+      </div>
+      <p class="hint">World frame: origin = home-plate center at ground level · +x toward the
+        pitcher/outfield · +y toward right field · feet.</p>
+    </div>
+
+    <div class="card">
+      <h2>Tapped points</h2>
+      <ul id="refList" class="reflist"><li class="muted">None yet.</li></ul>
+      <div class="row">
+        <button class="btn small danger" id="clearRefsBtn">Clear all</button>
+      </div>
+    </div>
+
+    <div id="solveError" class="error" hidden></div>
+    <div class="row split">
+      <button class="btn" data-prev>← Back</button>
+      <button class="btn primary" id="solveBtn" disabled>Solve mapping →</button>
+    </div>
+  </section>
+
+  <!-- STEP 3 : solve review -->
+  <section class="screen" data-screen="3" hidden>
+    <h1>3 · Mapping solved — review it</h1>
+    <p class="lede">The wizard fit a ground-plane homography to your taps. Check the
+      reprojection errors before trusting it.</p>
+    <div class="card">
+      <h2>Fit quality</h2>
+      <div class="bigstats">
+        <div><span id="statMeanPx">–</span><label>mean error (px)</label></div>
+        <div><span id="statMaxPx">–</span><label>max error (px)</label></div>
+        <div><span id="statMeanIn">–</span><label>mean error (in)</label></div>
+      </div>
+      <p class="hint" id="fitAdvice"></p>
+    </div>
+    <div class="card">
+      <h2>Per-point errors</h2>
+      <ul id="reprojList" class="reflist"></ul>
+      <p class="hint">Tap a row to delete that point and re-solve. Outliers usually mean a mis-tap.</p>
+    </div>
+    <div class="row split">
+      <button class="btn" data-prev>← Re-tap</button>
+      <button class="btn primary" data-next>Height scale →</button>
+    </div>
+  </section>
+
+  <!-- STEP 4 : height -->
+  <section class="screen" data-screen="4" hidden>
+    <h1>4 · Height scale <span class="muted">(recommended)</span></h1>
+    <p class="lede">The ground mapping can't measure <em>height</em> by itself. Stand a
+      marker of known height (bat on a tee, yardstick) at a known spot, tap its
+      <strong>base</strong>, then its <strong>top</strong>.</p>
+    <div class="card">
+      <label>Marker height (ft) <input id="markerH" type="number" step="0.1" min="0.3" max="10" value="3"></label>
+      <div class="row wrap">
+        <button class="btn small primary" id="tapBaseBtn">Tap base…</button>
+        <button class="btn small primary" id="tapTopBtn" disabled>Tap top…</button>
+      </div>
+      <p class="hint" id="heightStatus">No height sample yet. You can skip, but launch angle and
+        exit velocity will stay <span class="tag warn">uncalibrated estimate</span>.</p>
+      <ul id="heightList" class="reflist"></ul>
+    </div>
+    <div class="row split">
+      <button class="btn" data-prev>← Back</button>
+      <button class="btn primary" data-next id="toVerifyBtn">Verify →</button>
+    </div>
+    <div class="row"><button class="btn ghost" data-next>Skip height (stay uncalibrated for height)</button></div>
+  </section>
+
+  <!-- STEP 5 : verification -->
+  <section class="screen" data-screen="5" hidden>
+    <h1>5 · Verification — prove it</h1>
+    <p class="lede">Put the ball on a <strong>marked, known position</strong> (e.g. a cone at
+      15 ft), enter that position, then tap the ball in the camera view. The wizard
+      computes where it thinks the ball is and shows the miss distance.</p>
+    <div class="card">
+      <div class="row">
+        <label>Known X (ft) <input id="verX" type="number" step="0.1" value="15"></label>
+        <label>Known Y (ft) <input id="verY" type="number" step="0.1" value="0"></label>
+        <label>Pass if ≤ (ft) <input id="verThresh" type="number" step="0.1" min="0.05" max="3" value="0.5"></label>
+      </div>
+      <button class="btn primary" id="tapBallBtn">Tap the ball…</button>
+      <p class="hint" id="verifyHint">Nothing tapped yet.</p>
+    </div>
+    <div class="card" id="verifyResult" hidden>
+      <h2>Result</h2>
+      <div class="bigstats">
+        <div><span id="verErr">–</span><label>miss distance</label></div>
+        <div><span id="verVerdict">–</span><label>verdict</label></div>
+      </div>
+      <p class="hint" id="verAdvice"></p>
+    </div>
+    <div class="row split">
+      <button class="btn" data-prev>← Back</button>
+      <button class="btn primary" id="toProfileBtn">Finish →</button>
+    </div>
+  </section>
+
+  <!-- STEP 6 : profile -->
+  <section class="screen" data-screen="6" hidden>
+    <h1>6 · Calibration profile</h1>
+    <div class="card" id="profileCard"></div>
+    <div class="card">
+      <h2>What this unlocks</h2>
+      <ul class="checklist" id="unlockList"></ul>
+    </div>
+    <div class="row wrap">
+      <button class="btn primary" id="downloadBtn">⬇ Download profile JSON</button>
+      <button class="btn" id="copyBtn">⧉ Copy JSON</button>
+    </div>
+    <p class="hint">The profile is also saved on this device. The tracking stage (step 2 of the
+      build) reads this file — it will refuse to report calibrated numbers from any
+      profile that isn't verified.</p>
+    <div class="row split">
+      <button class="btn" data-prev>← Back</button>
+      <button class="btn ghost" id="restartBtn">↺ Start over</button>
+    </div>
+  </section>
+
+  <!-- PROFILE VIEWER (loaded) -->
+  <section class="screen" data-screen="7" hidden>
+    <h1>Saved profile</h1>
+    <div class="card" id="loadedCard"></div>
+    <div class="row"><button class="btn" id="backToStart">← Start</button></div>
+  </section>
+
+</main>
+
+<footer class="app-footer">
+  <span id="saveState" class="muted">progress saves on this device</span>
+</footer>
+
+<script src="calibration.js"></script>
+<script src="wizard.js"></script>
+</body>
+</html>
