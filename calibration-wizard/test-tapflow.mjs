@@ -187,15 +187,15 @@ stage._fire("dblclick", { clientX: 500, clientY: 200, target: stage });
 check("double-click zooms to 3x", Math.abs(S.view.z - 3) < 1e-9);
 
 // 8. editable garage dimensions drive the door-edge presets
-S.garage.door1Ft = 10.25; S.garage.centerFt = 6.5; S.garage.door2Ft = 10.25;
+S.garage.e0Ft = 0; S.garage.e1Ft = 10.25; S.garage.e2Ft = 16.5; S.garage.e3Ft = 26.75;
 const doors = H.buildPresets().filter((p) => p.id.indexOf("g-") === 0);
-check("door edges from dims", doors.map((d) => d.id).join(",") === "g-0,g-10.25,g-16.75,g-27");
-check("27 ft edge world x", Math.abs(doors[3].world[0] - 27 * 0.3048) < 1e-9);
+check("door edges from dims", doors.map((d) => d.id).join(",") === "g-0,g-10.25,g-16.5,g-26.75");
+check("26.75 ft edge world x", Math.abs(doors[3].world[0] - 26.75 * 0.3048) < 1e-9);
 check("door edge label", doors[1].label === "Door 1 end (10.25 ft)");
-S.garage.door1Ft = 11;
+S.garage.e1Ft = 11;
 const doorsB = H.buildPresets().filter((p) => p.id.indexOf("g-") === 0);
-check("dims edit moves edges", doorsB[1].id === "g-11" && doorsB[3].id === "g-27.75");
-S.garage.door1Ft = 10.25; // restore
+check("dims edit moves edges", doorsB[1].id === "g-11" && doorsB[3].id === "g-26.75");
+S.garage.e1Ft = 10.25; // restore
 
 console.log(fail === 0 ? `\n${pass} passed, 0 failed` : `\n${pass} passed, ${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);

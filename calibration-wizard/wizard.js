@@ -26,9 +26,13 @@
   function in1(m) { return (m * IN_PER_M).toFixed(1); }   // meters -> "5.9" in
 
   // Garage dimensions, editable on the reference-points screen (screen 2).
-  // Measured 2026-09-17: 10'3" doors, 6'6" center wall; window tops 47"/69.5".
-  var GARAGE_DEFAULTS = { side: -1, dir: 1, door1Ft: 10.25, centerFt: 6.5, door2Ft: 10.25,
+  // Measured 2026-09-17: door edges at 0 / 10.25 / 16.5 / 26.75 ft from the
+  // plate line (10'3" doors); window tops 47"/69.5".
+  var GARAGE_DEFAULTS = { side: -1, dir: 1, e0Ft: 0, e1Ft: 10.25, e2Ft: 16.5, e3Ft: 26.75,
                           doorHFt: 8, win1In: 47, win2In: 69.5 };
+  // [input id, S.garage key] for the editable dimension boxes (screen 2)
+  var DIM_FIELDS = [["dimE0", "e0Ft"], ["dimE1", "e1Ft"], ["dimE2", "e2Ft"], ["dimE3", "e3Ft"],
+                    ["dimDoorH", "doorHFt"], ["dimWin1", "win1In"], ["dimWin2", "win2In"]];
   var S = {
     screen: 0,
     cage: { lengthM: 9.144, widthM: 3.048, heightM: 3.05 },
@@ -510,8 +514,8 @@
   function ftFmt(x) { return (+x.toFixed(2)).toString(); }
   function garageEdgesFt() {
     var g = S.garage;
-    var e1 = g.door1Ft, e2 = e1 + g.centerFt, e3 = e2 + g.door2Ft;
-    return [[0, "Door edge @ plate"], [e1, "Door 1 end"], [e2, "Wall end"], [e3, "Door 2 end"]];
+    return [[g.e0Ft, "Door edge @ plate"], [g.e1Ft, "Door 1 end"],
+            [g.e2Ft, "Wall end"], [g.e3Ft, "Door 2 end"]];
   }
   function buildPresets() {
     var L = S.cage.lengthM, Wd = S.cage.widthM;
@@ -572,8 +576,7 @@
       "(plate center even with the first edge), plus the batter's box inside edges, 3 ft apart. " +
       "No tape measure — just tap each named point in the picture. Flip the toggles if the wall " +
       "is on the other side. Edit the dimensions above if your measurements change.";
-    [["dimDoor1", "door1Ft"], ["dimCenter", "centerFt"], ["dimDoor2", "door2Ft"],
-     ["dimDoorH", "doorHFt"], ["dimWin1", "win1In"], ["dimWin2", "win2In"]].forEach(function (pair) {
+    DIM_FIELDS.forEach(function (pair) {
       var el = $(pair[0]);
       if (el && document.activeElement !== el) el.value = g[pair[1]];
     });
@@ -588,12 +591,20 @@
   }
   // Editable garage dimensions: changing one re-derives every door-edge world
   // coordinate, so taps made under the old geometry are pruned (re-tap them).
-  [["dimDoor1", "door1Ft"], ["dimCenter", "centerFt"], ["dimDoor2", "door2Ft"],
-   ["dimDoorH", "doorHFt"], ["dimWin1", "win1In"], ["dimWin2", "win2In"]].forEach(function (pair) {
+  // Door edges must stay in increasing order along the wall.
+  DIM_FIELDS.forEach(function (pair) {
     $(pair[0]).addEventListener("change", function () {
       var el = $(pair[0]);
       var v = parseFloat(el.value);
-      if (!isFinite(v) || v <= 0) { el.value = S.garage[pair[1]]; return; }
+      var isEdge = pair[1].charAt(0) === "e";
+      var ok = isFinite(v) && (isEdge ? v >= 0 : v > 0);
+      if (ok && isEdge) {
+        var trial = { e0Ft: S.garage.e0Ft, e1Ft: S.garage.e1Ft,
+                      e2Ft: S.garage.e2Ft, e3Ft: S.garage.e3Ft };
+        trial[pair[1]] = v;
+        ok = trial.e0Ft < trial.e1Ft && trial.e1Ft < trial.e2Ft && trial.e2Ft < trial.e3Ft;
+      }
+      if (!ok) { el.value = S.garage[pair[1]]; return; }
       S.garage[pair[1]] = v;
       pruneStaleRefs();
       S.solve = null; S.activePreset = null; disarmTap();
