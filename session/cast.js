@@ -86,6 +86,8 @@ function closePanel() {
   stopScanning();
   stopPairing();
   showSwitchCam(false);
+  var rsb = el("btn-switch-cam-remote");
+  if (rsb) rsb.classList.add("hidden");
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
   el("cast-panel").classList.add("hidden");
@@ -244,21 +246,36 @@ function startBroadcastPairing(pin) {
         setStatus(msg);
         pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
       };
+      var quietRejoin = function () {
+        // Paired already: the link is just the command channel (remote
+        // camera switch). Rejoin silently — never touch the status text.
+        if (!answered || pairRetryTimer) return;
+        if (link) { try { link.close(); } catch (e) {} link = null; }
+        pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+      };
       var connect = function () {
-        if (answered) return;
+        if (link) { try { link.close(); } catch (e) {} link = null; }
         link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
           onReady: function () {
+            if (answered) return; // already paired: this link is commands-only
             setStatus("Broadcasting offer — waiting for the laptop (code " + pin + ")…");
             var sendOffer = function () { if (!answered && link) link.send(JSON.parse(offerMsg)); };
             sendOffer();
             republishTimer = setInterval(sendOffer, 2500); // the laptop may join late
           },
           onMessage: function (o) {
+            // Remote command from the laptop — the mounted phone never
+            // needs a touch to flip cameras.
+            if (o && o.t === "switch") { switchCamera(); return; }
             var d;
             try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
             if (d.t !== "answer" || answered) return;
             answered = true;
-            stopPairing();
+            // Paired: stop the timers but KEEP the link — remote commands
+            // (camera switch) arrive over it.
+            if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
+            if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+            if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
             pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
               setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
             }).catch(function (err) {
@@ -267,8 +284,8 @@ function startBroadcastPairing(pin) {
               setStatus("Pairing failed — try again. (" + why + ")");
             });
           },
-          onError: function () { scheduleReconnect("Pairing service hiccup — retrying…"); },
-          onClose: function () { scheduleReconnect("Connection blipped — reconnecting…"); }
+          onError: function () { if (answered) quietRejoin(); else scheduleReconnect("Pairing service hiccup — retrying…"); },
+          onClose: function () { if (answered) quietRejoin(); else scheduleReconnect("Connection blipped — reconnecting…"); }
         });
       };
       connect();
@@ -294,24 +311,33 @@ function watchPinFlow() {
     watchPinFlow();
   };
   var gotOffer = false, connected = false;
+  var quietRejoin = function () {
+    // Command channel dropped after pairing: rejoin silently so remote
+    // commands (camera switch) keep working. Never touches the status text.
+    if (!connected || pairRetryTimer) return;
+    if (link) { try { link.close(); } catch (e) {} link = null; }
+    pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+  };
   var connect = function () {
-    if (connected) return;
+    if (link) { try { link.close(); } catch (e) {} link = null; }
     link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
       onReady: function () {
-        link.send({ t: "hello" }); // nudge a phone that's already waiting
+        if (!connected) link.send({ t: "hello" }); // nudge a phone that's already waiting
       },
       onMessage: function (o) {
         if (o.t === "offer" && !gotOffer) { gotOffer = true; applyOfferPin(o); }
       },
       onError: function () {
-        if (!connected && !gotOffer) {
+        if (connected) { quietRejoin(); return; }
+        if (!gotOffer) {
           stopPairing();
           setStatus("Pairing service hiccup — retrying…");
           pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
         } else pairingUnavailable();
       },
       onClose: function () {
-        if (!connected && !gotOffer) {
+        if (connected) { quietRejoin(); return; }
+        if (!gotOffer) {
           stopPairing();
           setStatus("Connection blipped — retrying…");
           pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 5000);
@@ -363,9 +389,18 @@ function watchPinFlow() {
         window.SessionApp.onRemoteStream(stream);
       }
       connected = true;
-      stopPairing();
+      // Paired: stop the timers but KEEP the signaling link — the
+      // "switch phone camera" command goes out over it.
+      if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
+      if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+      if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
       el("cast-pin-show").classList.add("hidden");
       setStatus("✓ Phone camera connected — start the session below.");
+      var rsb = el("btn-switch-cam-remote");
+      if (rsb) {
+        rsb.classList.remove("hidden");
+        rsb.onclick = function () { if (link) link.send({ t: "switch" }); };
+      }
     };
     pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: d.sdp }))
       .then(function () { return pc.createAnswer(); })
