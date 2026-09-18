@@ -452,7 +452,11 @@ function watchPinFlow() {
       if (calb) {
         calb.classList.remove("hidden");
         calb.onclick = function () {
-          if (window.PhoneCalib) window.PhoneCalib.open();
+          if (window.PhoneCalib) {
+            window.PhoneCalib.open();
+          } else {
+            setStatus("Calibration script didn't load — refresh the page (footer Refresh button).");
+          }
         };
       }
     };
