@@ -59,6 +59,17 @@
     <button id="btn-cast-close">Close</button>
   </div>
 
+  <div id="motion-tuning">
+    <label id="sens-wrap">Detector
+      <select id="motion-sens">
+        <option value="calm">Calm</option>
+        <option value="normal" selected>Normal</option>
+        <option value="sensitive">Sensitive</option>
+      </select>
+    </label>
+    <div id="motion-meter" title="Live motion level — swings spike past the yellow line"><div id="motion-fill"></div><div id="motion-thresh"></div></div>
+  </div>
+
   <div id="controls">
     <button id="btn-start" class="big">● Start Live Session</button>
     <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
@@ -93,6 +104,6 @@
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
 <script src="cast.js?v=20260917d"></script>
-<script src="session.js?v=20260917c"></script>
+<script src="session.js?v=20260917d"></script>
 </body>
 </html>

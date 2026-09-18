@@ -90,3 +90,22 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
 #cast-scan-video { width: 100%; border-radius: 8px; background: #000; }
 #profile-load { display: block; margin-top: 10px; }
 #profile-warn { color: #e8c84a; font-size: 0.82rem; margin-top: 6px; }
+#motion-tuning { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+#sens-wrap { font-size: 14px; font-weight: 600; white-space: nowrap; }
+#motion-sens {
+  margin-left: 6px; padding: 6px 8px; border-radius: 8px;
+  background: #141b2e; color: #fff; border: 1px solid #2a3350; font-size: 14px;
+}
+#motion-meter {
+  position: relative; flex: 1; height: 10px; background: #0a0e1a;
+  border-radius: 6px; border: 1px solid #2a3350; overflow: hidden;
+}
+#motion-fill { height: 100%; width: 0%; background: #2a5aa0; transition: width 120ms linear; }
+#motion-fill.hot { background: #4ade80; }
+#motion-thresh { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #e8c84a; }
+.swing-card { position: relative; }
+.swing-del {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: #2a3350; color: #9fb0d0; font-size: 13px; line-height: 1;
+}

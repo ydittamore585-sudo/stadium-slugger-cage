@@ -152,12 +152,29 @@ function initCamera() {
 /* ------------------------------------------------------------------ */
 /* Motion detection → swing trigger                                    */
 /* ------------------------------------------------------------------ */
-// Batter's-box ROI in normalized coords (tune: batter near plate, left-center).
-var SWING_ROI = { x: 0.25, y: 0.35, w: 0.35, h: 0.45 };
-var MOTION_THRESHOLD = 2600;   // summed abs-diff in ROI (empirical)
-var COOLDOWN_MS = 2500;        // min gap between swings
+// A swing is big, fast, SUSTAINED motion — not a one-frame shimmer.
+// Per frame we measure, inside the swing ROI:
+//   hotFrac    fraction of sampled pixels whose luma changed hard
+//   biasRatio  |sum of signed diffs| / sum of |diffs|
+//              (~1 = the whole frame got brighter/darker = auto-exposure,
+//              not a swing)
+// A swing needs hotFrac above the sensitivity threshold for several
+// frames in a row; then the scene must go quiet before re-arming, so one
+// long motion can't log a burst of phantom swings.
+var SWING_ROI = { x: 0.20, y: 0.30, w: 0.45, h: 0.50 };
+var HOT_PX_DIFF = 14;        // |luma diff| for a pixel to count as moving hard
+var QUIET_FRAC = 0.015;      // below this the scene counts as quiet
+var QUIET_FRAMES = 8;        // quiet frames (~0.5 s) needed to re-arm
+var BIAS_REJECT = 0.6;       // biasRatio above this = exposure shift: ignore
+var SENS_LEVELS = {
+  calm:      { hotFrac: 0.16, frames: 4 },
+  normal:    { hotFrac: 0.09, frames: 3 },
+  sensitive: { hotFrac: 0.05, frames: 2 }
+};
+var motionLevel = "normal";
+var consecHot = 0, quietFrames = 0, armed = true;
 
-function frameDiffEnergy() {
+function frameMotion() {
   pctx.drawImage(video, 0, 0, PROC_W, PROC_H);
   var img = pctx.getImageData(0, 0, PROC_W, PROC_H);
   var d = img.data;
@@ -165,7 +182,7 @@ function frameDiffEnergy() {
       ry = Math.floor(SWING_ROI.y * PROC_H),
       rw = Math.floor(SWING_ROI.w * PROC_W),
       rh = Math.floor(SWING_ROI.h * PROC_H);
-  var energy = 0;
+  var hot = 0, total = 0, energy = 0, signed = 0;
   if (prevFrame) {
     for (var y = ry; y < ry + rh; y += 2) {
       for (var x = rx; x < rx + rw; x += 2) {
@@ -173,12 +190,20 @@ function frameDiffEnergy() {
         // Luma approx from RGB.
         var luma = (d[i] * 3 + d[i+1] * 6 + d[i+2]) / 10;
         var pluma = (prevFrame[i] * 3 + prevFrame[i+1] * 6 + prevFrame[i+2]) / 10;
-        energy += Math.abs(luma - pluma);
+        var diff = luma - pluma;
+        var ad = diff < 0 ? -diff : diff;
+        energy += ad;
+        signed += diff;
+        total++;
+        if (ad > HOT_PX_DIFF) hot++;
       }
     }
   }
   prevFrame = new Uint8ClampedArray(d);
-  return energy;
+  return {
+    hotFrac: total ? hot / total : 0,
+    biasRatio: energy > 0 ? Math.abs(signed) / energy : 0
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -348,10 +373,11 @@ function renderSwing(entry) {
   if (empty) empty.remove();
   var div = document.createElement("div");
   div.dataset.swingId = entry.id;
+  var delBtn = '<button class="swing-del" data-id="' + entry.id + '" title="Delete this entry">✕</button>';
   var r = entry.result;
   if (r.tracked) {
     div.className = "swing-card tracked";
-    div.innerHTML =
+    div.innerHTML = delBtn +
       "<h3>Swing #" + entry.id + " — " + r.exitVeloMph.toFixed(0) + " mph</h3>" +
       '<div class="nums"><span>EV <b>' + r.exitVeloMph.toFixed(1) + " mph</b></span>" +
       "<span>LA <b>" + r.launchAngleDeg.toFixed(1) + "°</b></span>" +
@@ -360,12 +386,28 @@ function renderSwing(entry) {
       new Date(entry.time).toLocaleTimeString() + "</div>";
   } else {
     div.className = "swing-card notracked";
-    div.innerHTML =
+    div.innerHTML = delBtn +
       "<h3>Swing #" + entry.id + " — no track</h3>" +
       '<div class="note">' + r.reason + ". No numbers fabricated.</div>";
   }
   swingLogEl.prepend(div);
 }
+
+// False alarms happen (walk-throughs, net wobble): let the user delete them.
+swingLogEl.addEventListener("click", function (ev) {
+  var btn = ev.target && ev.target.closest ? ev.target.closest(".swing-del") : null;
+  if (!btn) return;
+  var id = +btn.getAttribute("data-id");
+  var card = swingLogEl.querySelector('[data-swing-id="' + id + '"]');
+  if (card) card.remove();
+  state.swings = state.swings.filter(function (s) { return s.id !== id; });
+  for (var i = swingClips.length - 1; i >= 0; i--) {
+    if (swingClips[i].id === id) swingClips.splice(i, 1);
+  }
+  if (!swingLogEl.querySelector(".swing-card")) {
+    swingLogEl.innerHTML = '<p class="empty">No swings yet. Take a cut.</p>';
+  }
+});
 
 function drawSwingMarker() {
   var W = overlay.width, H = overlay.height;
@@ -379,19 +421,65 @@ function drawSwingMarker() {
 /* ------------------------------------------------------------------ */
 /* Main loop                                                           */
 /* ------------------------------------------------------------------ */
+// The loop runs whenever video is live: the motion meter is always on so
+// the detector can be tuned before the session; swings only trigger while
+// recording.
+var loopRunning = false;
 var lastFrameTime = 0;
-function loop(ts) {
-  if (!state.recording) return;
-  // Throttle to ~15 fps for motion detection.
-  if (ts - lastFrameTime > 66) {
-    lastFrameTime = ts;
-    try {
-      var energy = frameDiffEnergy();
-      if (energy > MOTION_THRESHOLD) onSwingDetected();
-    } catch (e) { /* keep the session alive */ }
-  }
+var lastMeterUpdate = 0;
+var motionFillEl = null, motionThreshEl = null;
+
+function ensureLoop() {
+  if (loopRunning) return;
+  loopRunning = true;
   requestAnimationFrame(loop);
 }
+
+function updateMotionMeter(hotFrac) {
+  if (!motionFillEl) {
+    motionFillEl = document.getElementById("motion-fill");
+    motionThreshEl = document.getElementById("motion-thresh");
+    if (!motionFillEl) return;
+  }
+  var s = SENS_LEVELS[motionLevel];
+  // Threshold line sits at 50%; the bar turns green past it.
+  motionFillEl.style.width = Math.min(100, (hotFrac / (s.hotFrac * 2)) * 100).toFixed(1) + "%";
+  motionFillEl.classList.toggle("hot", hotFrac >= s.hotFrac);
+}
+
+function loop(ts) {
+  requestAnimationFrame(loop);
+  // Throttle to ~15 fps for motion detection.
+  if (ts - lastFrameTime <= 66) return;
+  lastFrameTime = ts;
+  try {
+    var m = frameMotion();
+    if (ts - lastMeterUpdate > 200) {
+      lastMeterUpdate = ts;
+      updateMotionMeter(m.hotFrac);
+    }
+    if (!state.recording) return;
+    var s = SENS_LEVELS[motionLevel];
+    var candidate = m.hotFrac >= s.hotFrac && m.biasRatio < BIAS_REJECT;
+    if (candidate) consecHot++; else consecHot = 0;
+    // Re-arm only after the scene goes quiet: one long motion event
+    // can't log a burst of phantom swings.
+    if (!armed) {
+      if (m.hotFrac < QUIET_FRAC) {
+        if (++quietFrames >= QUIET_FRAMES) { armed = true; quietFrames = 0; }
+      } else quietFrames = 0;
+    }
+    if (armed && consecHot >= s.frames) {
+      armed = false; consecHot = 0; quietFrames = 0;
+      onSwingDetected();
+    }
+  } catch (e) { /* keep the session alive */ }
+}
+
+document.getElementById("motion-sens").addEventListener("change", function (ev) {
+  motionLevel = ev.target.value in SENS_LEVELS ? ev.target.value : "normal";
+  consecHot = 0;
+});
 
 /* ------------------------------------------------------------------ */
 /* Live session (no full recording by default).                        */
@@ -444,7 +532,8 @@ function startSession() {
   document.getElementById("camera-hint").style.display = "none";
   mRec.textContent = clipToggle.checked ? "CLIPS" : "OFF";
   prevFrame = null;
-  requestAnimationFrame(loop);
+  consecHot = 0; quietFrames = 0; armed = true;
+  ensureLoop();
 }
 
 function stopSession() {
@@ -538,6 +627,7 @@ function selectLocal() {
   initCamera().then(function () {
     btnStart.disabled = false;
     statusEl.textContent = "Camera ready";
+    ensureLoop();
   }).catch(function () {
     statusEl.textContent = "Camera blocked — allow access and reload";
     document.getElementById("camera-hint").textContent =
