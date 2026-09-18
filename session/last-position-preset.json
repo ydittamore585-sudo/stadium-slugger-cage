@@ -1,0 +1,51 @@
+{
+  "label": "Laptop chair position (2026-09-17, validated)",
+  "camera": {
+    "heightM": 1.2192,
+    "distanceBehindPlateM": 1.8288000000000002,
+    "sideOffsetM": 1.9812,
+    "imageWidth": 1280,
+    "imageHeight": 720,
+    "notes": ""
+  },
+  "H": [
+    [
+      0.004914287302388143,
+      0.018420795950945958,
+      -16.08360332080008
+    ],
+    [
+      -0.007497504306005231,
+      0.015441288766461855,
+      -3.029988240288624
+    ],
+    [
+      -0.0011574761337856312,
+      -0.004265839813953498,
+      1
+    ]
+  ],
+  "Hinv": [
+    [
+      -4.287488092382547,
+      -85.5322956199697,
+      -328.1201076139331
+    ],
+    [
+      -18.75405307922555,
+      23.35104336896322,
+      -230.8793635770648
+    ],
+    [
+      -0.08496445143918042,
+      0.0006102196526659229,
+      -0.36468557494558873
+    ]
+  ],
+  "meanPx": 1.5371132062673414,
+  "maxPx": 4.086295322063191,
+  "numPoints": 6,
+  "verified": false,
+  "approximate": true,
+  "notes": "From 2026-09-17 validated laptop-chair calibration. Phone is within inches of that spot per user. Treat as approximate until ball-on-ground check."
+}

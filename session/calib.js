@@ -186,6 +186,34 @@
     stopTapMode();
   }
 
+  function useLastPosition() {
+    setStatus("Loading last validated position…");
+    fetch("last-position-preset.json?v=20260917a")
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (preset) {
+        // Stash the homography where the session detector can use it.
+        window.SessionApp = window.SessionApp || {};
+        window.SessionApp.phoneCalibration = {
+          H: preset.H, Hinv: preset.Hinv,
+          meanPx: preset.meanPx, maxPx: preset.maxPx,
+          numPoints: preset.numPoints,
+          verified: false,
+          approximate: true,
+          label: preset.label,
+        };
+        profile = { preset: preset };
+        setStatus("Loaded '" + preset.label + "' — APPROXIMATE (phone within inches of that spot, not exact). Treat numbers as estimates. For best accuracy, do the 6-tap calibration.");
+        $("calib-apply").disabled = false;
+        $("calib-save").disabled = false;
+      })
+      .catch(function (e) {
+        setStatus("Couldn't load last position: " + (e && e.message ? e.message : e));
+      });
+  }
+
   function save() {
     if (!profile) return;
     var blob = new Blob([JSON.stringify(profile, null, 2)], { type: "application/json" });
@@ -265,11 +293,12 @@
 
   // Wire panel buttons once the DOM is ready.
   function wire() {
-    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close");
+    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last");
     if (s) s.onclick = solve;
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;
     if (c) c.onclick = close;
+    if (ul) ul.onclick = useLastPosition;
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", wire);
