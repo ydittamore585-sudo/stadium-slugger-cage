@@ -209,6 +209,9 @@
     $("calib-panel").classList.remove("hidden");
     $("calib-apply").disabled = true;
     $("calib-save").disabled = true;
+    // Hide the caption bar while calibrating — it sits on the video.
+    var hint = $("camera-hint");
+    if (hint) hint.style.display = "none";
     // Listen on the container, not the video: overlay layers can swallow
     // clicks on the video element itself. videoPos() maps to video pixels.
     var wrap = $("camera-wrap");
@@ -226,6 +229,9 @@
     window.removeEventListener("resize", drawMarkers);
     var layer = $("calib-markers");
     if (layer) layer.innerHTML = "";
+    // Restore the caption bar.
+    var hint = $("camera-hint");
+    if (hint) hint.style.display = "";
   }
 
   function close() {
