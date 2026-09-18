@@ -322,6 +322,69 @@ async function testStallRefreshesOffer() {
   ok(lastOffer(env.links[1]).sdp !== firstOffer, "the refreshed offer has a new SDP");
 }
 
+// 7. THE PATCH-DAY BUG: the laptop refreshes (new build), the mounted phone
+//    sits on a dead handshake with answered=true and never republishes.
+//    The fresh laptop page says hello with a NEW page sid -> the phone must
+//    rebroadcast on its own. A hello with the SAME sid (command channel
+//    rejoin, no refresh) or no sid (older laptop build) must NOT rebroadcast.
+async function testLaptopRefreshRebroadcasts() {
+  console.log("7. phone rebroadcasts when a NEW laptop page says hello after pairing");
+  const env = makeEnv();
+  const link = await phoneGotoPair(env);
+  link.handlers.onMessage({ t: "answer", sdp: "laptop-answer-sdp-1", sid: "laptop-session-A" });
+  await flush();
+  ok(env.status().indexOf("Broadcasting") >= 0, "paired with laptop session A");
+
+  link.handlers.onMessage({ t: "hello", sid: "laptop-session-B" }); // laptop refreshed
+  await flush();
+  ok(env.status().indexOf("rebroadcasting") >= 0, "phone noticed the laptop restarted (got: " + env.status() + ")");
+  env.advance(600);
+  await flush();
+  ok(env.pcCount === 2, "fresh offer cycle started a new peer connection");
+  ok(env.getUserMediaCalls === 1, "camera was NOT re-requested");
+  env.links[1].handlers.onReady();
+  await flush();
+  ok(!!lastOffer(env.links[1]), "rebroadcast offer published for the new laptop page");
+
+  const env2 = makeEnv();
+  const link2 = await phoneGotoPair(env2);
+  link2.handlers.onMessage({ t: "answer", sdp: "laptop-answer-sdp-1", sid: "laptop-session-A" });
+  await flush();
+  link2.handlers.onMessage({ t: "hello", sid: "laptop-session-A" }); // same page, channel rejoin
+  await flush();
+  env2.advance(600);
+  await flush();
+  ok(env2.pcCount === 1, "same-sid hello did not rebroadcast");
+
+  const env3 = makeEnv();
+  const link3 = await phoneGotoPair(env3);
+  link3.handlers.onMessage({ t: "answer", sdp: "laptop-answer-sdp-1", sid: "laptop-session-A" });
+  await flush();
+  link3.handlers.onMessage({ t: "hello" }); // older laptop build, no sid
+  await flush();
+  env3.advance(600);
+  await flush();
+  ok(env3.pcCount === 1, "sid-less hello did not rebroadcast");
+}
+
+// 8. The laptop's hello and its answer both carry the page session id, and
+//    it's the same id in both — that's what lets the phone match them.
+async function testLaptopHelloAndAnswerCarrySid() {
+  console.log("8. laptop hello + answer carry the page session id");
+  const env = makeEnv();
+  env.elements["btn-watch"]._handlers.click[0]();
+  await flush();
+  const link = env.links[0];
+  link.handlers.onReady();
+  await flush();
+  const hello = link.sent.find((m) => m.t === "hello");
+  ok(!!hello && typeof hello.sid === "string" && hello.sid.length > 0, "hello carries a page sid");
+  link.handlers.onMessage({ t: "offer", sdp: "phone-offer-SDP-A" });
+  await flush();
+  const answers = link.sent.filter((m) => m.t === "answer");
+  ok(answers.length >= 1 && answers[0].sid === hello.sid, "answer carries the same page sid");
+}
+
 // ---------------------------------------------------------------------------
 await testBuildTag();
 await testDuplicateAnswerIgnored();
@@ -330,6 +393,8 @@ await testThreeFailuresFreshOffer();
 await testConnectionDeathRebroadcasts();
 await testLaptopDedupeAndRepair();
 await testStallRefreshesOffer();
+await testLaptopRefreshRebroadcasts();
+await testLaptopHelloAndAnswerCarrySid();
 
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

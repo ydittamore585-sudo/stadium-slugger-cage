@@ -37,6 +37,11 @@ var CAST_BUILD = (function () {
   } catch (e) { return "dev"; }
 })();
 
+// Unique per page load: lets the phone distinguish "the laptop refreshed"
+// (new sid -> rebroadcast the offer) from "the laptop's command channel
+// just rejoined" (same sid -> stay quiet and keep streaming).
+var PAGE_SID = "p" + Date.now().toString(36) + Math.floor(Math.random() * 2176782336).toString(36);
+
 // PIN pairing state
 var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
@@ -519,6 +524,7 @@ function broadcastOfferCycle(pin, quiet) {
   startHealthPoll(myPc, "out");
   preferSingleCodec(myPc, "video"); // one codec -> smaller offer
   var answered = false;
+  var pairedLaptopSid = null; // page session that answered us; a hello from anyone else = laptop refreshed
   var answerAttempts = 0;
   var stallTimer = null;
 
@@ -531,7 +537,7 @@ function broadcastOfferCycle(pin, quiet) {
   //     next copy retries automatically (attempts shown in the status)
   //   - 3 failed attempts -> mint a fresh offer; the laptop treats a new
   //     offer SDP as a re-pair request and re-handshakes on its own
-  var applyPhoneAnswer = function (sdp) {
+  var applyPhoneAnswer = function (sdp, sid) {
     if (epoch !== broadcastEpoch || myPc !== pc) return; // superseded
     var sig = "";
     try { sig = myPc.signalingState; } catch (e) {}
@@ -539,6 +545,7 @@ function broadcastOfferCycle(pin, quiet) {
     if (sig !== "have-local-offer") return; // mid-restart; a fresh offer is coming
     if (answered) return; // an apply is already in flight
     answered = true;
+    pairedLaptopSid = sid || null; // remember WHO answered: a hello from anyone else = laptop refreshed
     myPc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: sdp })).then(function () {
       if (epoch !== broadcastEpoch || myPc !== pc) return;
       answerAttempts = 0;
@@ -616,13 +623,27 @@ function broadcastOfferCycle(pin, quiet) {
         },
         onMessage: function (o) {
           if (epoch !== broadcastEpoch) return;
+          if (o && o.t === "hello") {
+            // A laptop page announcing itself. If we're already paired but
+            // with a DIFFERENT page session, the laptop refreshed and its
+            // half of the handshake is gone — rebroadcast a fresh offer so
+            // video comes back with nobody touching the mounted phone.
+            // (A hello without a sid is an older laptop build: ignore,
+            // exactly as before.)
+            if (answered && o.sid && pairedLaptopSid && o.sid !== pairedLaptopSid) {
+              broadcastEpoch++;
+              setStatus("Laptop restarted — rebroadcasting…");
+              setTimeout(function () { if (broadcastActive) broadcastOfferCycle(pin, true); }, 500);
+            }
+            return;
+          }
           // Remote command from the laptop — the mounted phone never
           // needs a touch to flip cameras.
           if (o && o.t === "switch") { switchCamera(); return; }
           var d;
           try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
           if (d.t !== "answer") return;
-          applyPhoneAnswer(d.sdp);
+          applyPhoneAnswer(d.sdp, d.sid);
         },
         onError: function () { if (answered) quietRejoin(); else scheduleReconnect("Pairing service hiccup — retrying…"); },
         onClose: function () { if (answered) quietRejoin(); else scheduleReconnect("Connection blipped — reconnecting…"); }
@@ -675,7 +696,10 @@ function watchPinFlow() {
     if (link) { try { link.close(); } catch (e) {} link = null; }
     link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
       onReady: function () {
-        if (!connected) link.send({ t: "hello" }); // nudge a phone that's already waiting
+        // Nudge a phone that's already waiting — and identify this page
+        // session, so a phone paired with a PREVIOUS page knows to
+        // rebroadcast its offer instead of sitting on a dead handshake.
+        if (!connected) link.send({ t: "hello", sid: PAGE_SID });
       },
       onMessage: function (o) {
         // Offers republish every 2.5s, so dedupe by SDP: an identical SDP is
@@ -800,7 +824,7 @@ function watchPinFlow() {
       .then(function (ans) { return pc.setLocalDescription(ans); })
       .then(function () { return waitIceComplete(pc); })
       .then(function () {
-        var answerMsg = fullSdpMsg("answer", pc.localDescription.sdp);
+        var answerMsg = fullSdpMsg("answer", pc.localDescription.sdp, { sid: PAGE_SID });
         var sendAnswer = function () { if (!connected && link) link.send(JSON.parse(answerMsg)); };
         sendAnswer();
         republishTimer = setInterval(sendAnswer, 2500);
@@ -902,8 +926,11 @@ function encodeMsg(type, sdp) {
 // PIN/MQTT pairing: no size constraint, so send the phone's SDP exactly as
 // its WebRTC stack generated it — no minifier in the path. (The minifier
 // exists only to fit handshakes into scannable QR codes for manual pairing.)
-function fullSdpMsg(type, sdp) {
-  return JSON.stringify({ t: type, sdp: sdp });
+// `extra` carries small non-SDP fields (e.g. the laptop's page sid).
+function fullSdpMsg(type, sdp, extra) {
+  var o = { t: type, sdp: sdp };
+  if (extra) for (var k in extra) { if (extra[k] !== undefined) o[k] = extra[k]; }
+  return JSON.stringify(o);
 }
 
 function decodeMsg(text) {
@@ -911,7 +938,7 @@ function decodeMsg(text) {
   if (!o || (o.t !== "offer" && o.t !== "answer")) throw new Error("bad code");
   var sdp = o.s ? LZString.decompressFromBase64(o.s) : o.sdp; // o.sdp = legacy uncompressed
   if (!sdp) throw new Error("bad code");
-  return { t: o.t, sdp: sdp };
+  return { t: o.t, sdp: sdp, sid: o.sid || null };
 }
 
 function waitIceComplete(pc) {

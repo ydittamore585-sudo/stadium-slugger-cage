@@ -41,6 +41,77 @@
   var heightActive = false, heightTaps = []; // Step 12: bat tap mode
   var verifyActive = false, verifyTap = null; // Step 1: ball verification mode
 
+  // --- Calibration persistence -----------------------------------------
+  // The laptop's solved calibration survives a page refresh: every
+  // mutation persists the state to localStorage, and wire() restores it on
+  // load. A refresh after a patch-day deploy no longer forces a re-tap when
+  // the phone hasn't moved. Restored state is timestamped in the status
+  // line; if the phone WAS remounted, re-tap or Auto-adjust as usual.
+  // Persistence never breaks calibration: any storage error is swallowed.
+  var CALIB_STORE_KEY = "cage.calibration.v1";
+
+  function persistCalibration() {
+    try {
+      var s = window.SessionApp || {};
+      var data = {
+        v: 1,
+        savedAt: Date.now(),
+        phone: s.phoneCalibration || null,
+        manual: s.manualCalibration || null,
+        profile: profile || null,
+        lastHeightScale: lastHeightScale || null,
+        hasSolvedProfile: !!hasSolvedProfile
+      };
+      // profile.refPatches holds base64 48x48 patches (~3KB each) — small.
+      localStorage.setItem(CALIB_STORE_KEY, JSON.stringify(data));
+    } catch (e) { /* storage full/blocked: session works, just won't survive refresh */ }
+  }
+
+  function restoreCalibration() {
+    var raw = null;
+    try { raw = localStorage.getItem(CALIB_STORE_KEY); } catch (e) { return false; }
+    if (!raw) return false;
+    var data = null;
+    try { data = JSON.parse(raw); } catch (e) { return false; }
+    if (!data) return false;
+    // Case 1: a solved/applied calibration — the common case. Restore it
+    // wholesale so the detector keeps working after a refresh.
+    if (data.phone && data.phone.H) {
+      window.SessionApp = window.SessionApp || {};
+      window.SessionApp.phoneCalibration = data.phone;
+      if (data.manual) window.SessionApp.manualCalibration = data.manual;
+      if (data.profile) profile = data.profile;
+      if (data.lastHeightScale) lastHeightScale = data.lastHeightScale;
+      hasSolvedProfile = !!data.hasSolvedProfile;
+      var t = "";
+      try { t = new Date(data.savedAt).toLocaleTimeString(); } catch (e) {}
+      var ageH = (Date.now() - (data.savedAt || 0)) / 3600000;
+      var n = data.phone.numPoints != null ? data.phone.numPoints : "?";
+      var mp = (typeof data.phone.meanPx === "number") ? data.phone.meanPx.toFixed(1) : "?";
+      var flags = (data.phone.autoAdjusted ? " [auto-adjusted]" : "") +
+                  (data.phone.approximate ? " [APPROXIMATE]" : "") +
+                  (data.phone.verified ? " [verified]" : "");
+      var stale = ageH > 12
+        ? " — over 12h old: re-tap or Auto-adjust to be safe."
+        : " — if the phone moved since, re-tap or Auto-adjust.";
+      setStatus("Restored calibration from " + t + " (" + n + " pts, " + mp + "px)" + flags + stale);
+      var ab = $("calib-apply"); if (ab) ab.disabled = false;
+      var sv = $("calib-save"); if (sv) sv.disabled = false;
+      unlockCalibActions();
+      return true;
+    }
+    // Case 2: a profile was loaded (file) but never solved/applied — keep
+    // it staged for Auto-adjust rather than dropping it on the floor.
+    if (data.profile && data.profile.refPatches && data.profile.refPatches.patches) {
+      profile = data.profile;
+      if (data.lastHeightScale) lastHeightScale = data.lastHeightScale;
+      setStatus("Restored your loaded profile (" + data.profile.refPatches.patches.length + " reference patches, not yet applied) — hit Auto-adjust.");
+      var au = $("calib-auto"); if (au) au.disabled = false;
+      return true;
+    }
+    return false;
+  }
+
   function videoEl() { return $("cam"); }
 
   function setStatus(msg) {
@@ -206,6 +277,7 @@
         profile.refPatches = rp;
       }
     } catch (e) {}
+    persistCalibration();
   }
 
   function apply() {
@@ -239,6 +311,7 @@
         $("calib-apply").disabled = false;
         $("calib-save").disabled = false;
         unlockCalibActions();
+        persistCalibration();
       })
       .catch(function (e) {
         setStatus("Couldn't load last position: " + (e && e.message ? e.message : e));
@@ -373,6 +446,7 @@
       } catch (e) {}
       setStatus("Height scale: " + Math.round(pxPerM) + " px/m from the bat. Saved with the profile — tap Height again any time to redo it.");
       stopHeightMode();
+      persistCalibration();
     }
   }
 
@@ -514,6 +588,7 @@
       };
       if (profile && typeof profile === "object") profile.verification = ver;
       window.SessionApp.phoneCalibration.verified = passed;
+      persistCalibration();
     } catch (e) {}
   }
 
@@ -842,6 +917,7 @@
     setStatus("Auto-adjusted ✓ " + found.length + "/" + total + " points, shift (" + dx + ", " + dy + ")px, scale " + medScale.toFixed(2) + "x, mean error " + res.meanPx.toFixed(1) + "px" + hsNote + ". Numbers live — tap Apply or re-tap manually if this looks off.");
     var ab2 = $("calib-apply");
     if (ab2) ab2.disabled = false;
+    persistCalibration();
   }
 
   // Diagnostic: prove the laptop can grab pixels from the phone feed.
@@ -904,6 +980,7 @@
         setStatus("Loaded profile with " + n + " reference patches (" + (p.label || p.notes || "saved calibration") + "). Hit Auto-adjust.");
         var ab = $("calib-auto");
         if (ab) ab.disabled = false;
+        persistCalibration();
       } catch (e) {
         setStatus("Couldn't parse that file: " + (e && e.message ? e.message : e));
       }
@@ -937,6 +1014,9 @@
       if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
       lf.value = "";
     };
+    // A solved calibration survives refreshes: restore it so a patch-day
+    // reload never forces a re-tap when the phone hasn't moved.
+    restoreCalibration();
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", wire);
