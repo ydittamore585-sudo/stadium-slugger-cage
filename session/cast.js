@@ -4,6 +4,10 @@
  * Pure static-page WebRTC. No signaling server: the offer/answer are
  * exchanged as QR codes (camera scan) with copy/paste text fallback.
  * Pairing (primary): the laptop shows a 6-digit code, the phone types it in.
+ * The laptop's code is permanent (localStorage) and the phone remembers the
+ * last code it used, so re-pairing after a refresh is automatic — pair once.
+ * The phone keeps offering until the laptop answers and rejoins the topic
+ * after connection blips; the laptop rejoins too.
  * Offer/answer are relayed through a lightweight public MQTT broker over
  * WebSocket — the broker only sees the SDP handshake; the camera media
  * stays peer-to-peer on the LAN, encrypted with DTLS-SRTP.
@@ -25,8 +29,19 @@ var mode = null; // 'broadcast' | 'watch'
 // PIN pairing state
 var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
-var link = null, republishTimer = null, pairTimeout = null;
+var link = null, republishTimer = null, pairTimeout = null, pairRetryTimer = null;
 var manualStarted = false;
+
+// The laptop's code is permanent (survives refreshes), so a phone that's
+// already broadcasting re-pairs on its own — nobody has to touch the
+// mounted phone again. The phone remembers the last code it used so a
+// re-pair is one tap.
+var PIN_STORE_KEY = "cage.cast.pin";    // this laptop's permanent code
+var LAST_PIN_KEY = "cage.cast.lastPin"; // code the phone last broadcast to
+
+function storeGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function storeDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 
 var RTC_CFG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
@@ -70,11 +85,21 @@ function closePanel() {
 function stopPairing() {
   if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
   if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+  if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
   if (link) { try { link.close(); } catch (e) {} link = null; }
 }
 
 function makePin() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function getOrMakePin() {
+  var pin = storeGet(PIN_STORE_KEY);
+  if (!pin || !/^\d{6}$/.test(pin)) {
+    pin = makePin();
+    storeSet(PIN_STORE_KEY, pin);
+  }
+  return pin;
 }
 
 function pairingUnavailable() {
@@ -101,18 +126,28 @@ function wireManualToggle() {
 }
 
 // Broadcast (phone): type the laptop's code, camera pairs automatically.
+// The last code is pre-filled, so re-pairing after the phone's page reloads
+// is one tap. The phone keeps offering until the laptop answers — it never
+// gives up on its own, since nobody can reach it in the mount.
 function broadcastPinFlow() {
   if (typeof MqttLink === "undefined") { pairingUnavailable(); return; }
   el("cast-pin-enter").classList.remove("hidden");
   var input = el("cast-pin-input");
   var entryStatus = el("cast-pin-entry-status");
-  input.value = "";
-  entryStatus.textContent = "";
+  var lastPin = storeGet(LAST_PIN_KEY);
+  if (lastPin && /^\d{6}$/.test(lastPin)) {
+    input.value = lastPin;
+    entryStatus.textContent = "Last code filled in — tap Pair to resume.";
+  } else {
+    input.value = "";
+    entryStatus.textContent = "";
+  }
   setStatus("Enter the 6-digit code shown on the laptop.");
   el("btn-cast-pair").onclick = function () {
     var pin = (input.value || "").replace(/\D/g, "");
     if (pin.length !== 6) { entryStatus.textContent = "That code needs 6 digits."; return; }
     entryStatus.textContent = "";
+    storeSet(LAST_PIN_KEY, pin);
     el("cast-pin-enter").classList.add("hidden");
     startBroadcastPairing(pin);
   };
@@ -143,33 +178,41 @@ function startBroadcastPairing(pin) {
       var offerMsg = encodeMsg("offer", pc.localDescription.sdp);
       var answered = false;
       setStatus("Pairing…");
-      link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
-        onReady: function () {
-          setStatus("Waiting for the laptop to answer…");
-          var sendOffer = function () { if (!answered && link) link.send(JSON.parse(offerMsg)); };
-          sendOffer();
-          republishTimer = setInterval(sendOffer, 2500); // don't miss a late join
-          pairTimeout = setTimeout(function () {
-            if (!answered) { stopPairing(); setStatus("No answer from the laptop — check the code and try again."); }
-          }, 120000);
-        },
-        onMessage: function (o) {
-          var d;
-          try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
-          if (d.t !== "answer" || answered) return;
-          answered = true;
-          stopPairing();
-          pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
-            setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
-          }).catch(function () {
-            setStatus("Pairing failed — try again.");
-          });
-        },
-        onError: pairingUnavailable,
-        onClose: function () {
-          if (!answered) { stopPairing(); setStatus("Pairing connection lost — try again."); }
-        }
-      });
+      // A blipped connection must not strand the mounted phone: wait a few
+      // seconds and rejoin the same topic. stopPairing() (panel close) clears
+      // pairRetryTimer, so this can't resurrect a closed session.
+      var scheduleReconnect = function (msg) {
+        if (answered) return;
+        stopPairing();
+        setStatus(msg);
+        pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+      };
+      var connect = function () {
+        if (answered) return;
+        link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
+          onReady: function () {
+            setStatus("Broadcasting offer — waiting for the laptop (code " + pin + ")…");
+            var sendOffer = function () { if (!answered && link) link.send(JSON.parse(offerMsg)); };
+            sendOffer();
+            republishTimer = setInterval(sendOffer, 2500); // the laptop may join late
+          },
+          onMessage: function (o) {
+            var d;
+            try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
+            if (d.t !== "answer" || answered) return;
+            answered = true;
+            stopPairing();
+            pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
+              setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
+            }).catch(function () {
+              setStatus("Pairing failed — try again.");
+            });
+          },
+          onError: function () { scheduleReconnect("Pairing service hiccup — retrying…"); },
+          onClose: function () { scheduleReconnect("Connection blipped — reconnecting…"); }
+        });
+      };
+      connect();
     });
   }).catch(function () {
     setStatus("Phone camera blocked — allow access and retry.");
@@ -177,29 +220,50 @@ function startBroadcastPairing(pin) {
 }
 
 // Watch (laptop): show the code, wait for the phone, connect automatically.
+// The code is permanent for this laptop: refreshing the page shows the same
+// code, and a phone that's already broadcasting re-pairs within seconds.
 function watchPinFlow() {
   if (typeof MqttLink === "undefined") { pairingUnavailable(); return; }
-  var pin = makePin();
+  var pin = getOrMakePin();
   el("cast-pin").textContent = pin;
   el("cast-pin-show").classList.remove("hidden");
-  el("cast-pin-hint").textContent = "Waiting for the phone…";
-  setStatus("On your phone: open this page, tap “📡 Phone: broadcast camera”, and enter the code.");
+  el("cast-pin-hint").textContent = "Waiting for the phone — this code doesn't change.";
+  el("cast-pin-new").onclick = function () {
+    storeDel(PIN_STORE_KEY);
+    stopPairing();
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    watchPinFlow();
+  };
   var gotOffer = false, connected = false;
-  link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
-    onReady: function () {
-      link.send({ t: "hello" }); // nudge a phone that's already waiting
-    },
-    onMessage: function (o) {
-      if (o.t === "offer" && !gotOffer) { gotOffer = true; applyOfferPin(o); }
-    },
-    onError: pairingUnavailable,
-    onClose: function () {
-      if (!connected) { stopPairing(); setStatus("Pairing connection lost — try again."); }
-    }
-  });
+  var connect = function () {
+    if (connected) return;
+    link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
+      onReady: function () {
+        link.send({ t: "hello" }); // nudge a phone that's already waiting
+      },
+      onMessage: function (o) {
+        if (o.t === "offer" && !gotOffer) { gotOffer = true; applyOfferPin(o); }
+      },
+      onError: function () {
+        if (!connected && !gotOffer) {
+          stopPairing();
+          setStatus("Pairing service hiccup — retrying…");
+          pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+        } else pairingUnavailable();
+      },
+      onClose: function () {
+        if (!connected && !gotOffer) {
+          stopPairing();
+          setStatus("Connection blipped — retrying…");
+          pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 5000);
+        }
+      }
+    });
+  };
+  connect();
   pairTimeout = setTimeout(function () {
     if (!gotOffer && !connected) {
-      el("cast-pin-hint").textContent = "Still waiting… make sure the phone entered the same code.";
+      el("cast-pin-hint").textContent = "Still waiting… make sure the phone entered code " + pin + ".";
     }
   }, 30000);
 
@@ -236,7 +300,14 @@ function watchPinFlow() {
         sendAnswer();
         republishTimer = setInterval(sendAnswer, 2500);
         pairTimeout = setTimeout(function () {
-          if (!connected) { stopPairing(); setStatus("The phone didn't connect — try pairing again."); }
+          if (!connected) {
+            // Handshake stalled: rejoin the same topic and wait for the
+            // phone's next offer republish. Same code, no user action.
+            setStatus("Handshake stalled — retrying on the same code…");
+            gotOffer = false;
+            stopPairing();
+            connect();
+          }
         }, 120000);
       })
       .catch(function () {
