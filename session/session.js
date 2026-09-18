@@ -409,6 +409,19 @@ swingLogEl.addEventListener("click", function (ev) {
   }
 });
 
+// Wipe the slate: clears the log, pending clips, and the swing counter.
+document.getElementById("btn-clear-swings").addEventListener("click", function () {
+  if (!state.swings.length && !swingLogEl.querySelector(".swing-card")) return;
+  if (!window.confirm("Clear all swing entries? This can't be undone.")) return;
+  state.swings = [];
+  state.swingCount = 0;
+  swingClips.length = 0;
+  mSwings.textContent = "0";
+  mEV.textContent = "—";
+  mLA.textContent = "—";
+  swingLogEl.innerHTML = '<p class="empty">No swings yet. Take a cut.</p>';
+});
+
 function drawSwingMarker() {
   var W = overlay.width, H = overlay.height;
   octx.strokeStyle = "#4ade80"; octx.lineWidth = 4;

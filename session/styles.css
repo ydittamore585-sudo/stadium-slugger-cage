@@ -109,3 +109,8 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
   border-radius: 50%; border: none; cursor: pointer;
   background: #2a3350; color: #9fb0d0; font-size: 13px; line-height: 1;
 }
+#btn-clear-swings {
+  margin-left: 10px; padding: 4px 12px; border-radius: 8px; cursor: pointer;
+  background: #2a3350; color: #9fb0d0; border: 1px solid #3a4560;
+  font-size: 0.8rem; font-weight: 600;
+}
