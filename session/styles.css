@@ -71,7 +71,7 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
   border-radius: 8px; font-size: 0.7rem; margin-bottom: 8px;
 }
 #cast-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
-#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close, #btn-cast-pair {
+#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close, #btn-cast-pair, #btn-switch-cam {
   padding: 10px 14px; border-radius: 8px; border: none; cursor: pointer;
   background: #2a5aa0; color: #fff; font-weight: 600;
 }

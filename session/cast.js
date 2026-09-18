@@ -25,6 +25,7 @@ var panel = null, statusEl = null, qrEl = null;
 var scanVideo = null, scanCanvas = null;
 var pc = null, localStream = null, scanStream = null, scanning = false;
 var mode = null; // 'broadcast' | 'watch'
+var facingMode = "environment"; // phone broadcast camera; switchable
 
 // Build tag, derived from this script's own ?v= cache-buster: shown in the
 // footer so both devices can confirm they're running the same build.
@@ -84,10 +85,40 @@ function showPanel(which) {
 function closePanel() {
   stopScanning();
   stopPairing();
+  showSwitchCam(false);
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
   el("cast-panel").classList.add("hidden");
   mode = null;
+}
+
+function showSwitchCam(show) {
+  var b = el("btn-switch-cam");
+  if (b) b.classList.toggle("hidden", !show);
+}
+
+// Phone: flip front/rear camera mid-broadcast. Swaps the track on the live
+// sender — no re-pairing needed, the laptop keeps receiving the same feed.
+function switchCamera() {
+  if (mode !== "broadcast" || !pc) return;
+  var next = (facingMode === "environment") ? "user" : "environment";
+  setStatus("Switching camera…");
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: next, width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false
+  }).then(function (stream) {
+    var newTrack = stream.getVideoTracks()[0];
+    var sender = pc.getSenders().filter(function (s) { return s.track && s.track.kind === "video"; })[0];
+    var p = (sender && sender.replaceTrack) ? sender.replaceTrack(newTrack) : Promise.reject(new Error("no video sender"));
+    return p.then(function () {
+      if (localStream) { try { localStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
+      localStream = stream;
+      facingMode = next;
+      setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
+    });
+  }).catch(function (err) {
+    setStatus("Couldn't switch camera (" + (err && err.message ? err.message : err) + ") — still on the " + (facingMode === "environment" ? "rear" : "front") + " camera.");
+  });
 }
 
 /* ---------------- PIN pairing ---------------- */
@@ -168,10 +199,11 @@ function broadcastPinFlow() {
 function startBroadcastPairing(pin) {
   setStatus("Starting phone camera…");
   navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
   }).then(function (stream) {
     localStream = stream;
+    showSwitchCam(true);
     // Wake lock so the phone doesn't sleep mid-session.
     try {
       if (navigator.wakeLock) navigator.wakeLock.request("screen");
@@ -520,10 +552,11 @@ function openPaste(onText) {
 function broadcastManualFlow() {
   setStatus("Starting phone camera…");
   navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
   }).then(function (stream) {
     localStream = stream;
+    showSwitchCam(true);
     // Wake lock so the phone doesn't sleep mid-session.
     try {
       if (navigator.wakeLock) navigator.wakeLock.request("screen");
@@ -619,6 +652,8 @@ document.addEventListener("DOMContentLoaded", function () {
   el("btn-broadcast").addEventListener("click", function () { showPanel("broadcast"); });
   el("btn-watch").addEventListener("click", function () { showPanel("watch"); });
   el("btn-cast-close").addEventListener("click", closePanel);
+  var switchCam = el("btn-switch-cam");
+  if (switchCam) switchCam.addEventListener("click", switchCamera);
   var buildTag = el("build-tag");
   if (buildTag) buildTag.textContent = "build " + CAST_BUILD;
   var refreshBtn = el("btn-refresh");
