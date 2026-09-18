@@ -132,13 +132,19 @@ function waitIceComplete(pc) {
 
 function showQr(text) {
   qrEl.innerHTML = "";
-  try {
-    /* global QRCode */
-    new QRCode(qrEl, { text: text, width: 264, height: 264, correctLevel: QRCode.CorrectLevel.M });
-    return true;
-  } catch (e) {
-    return false; // too big for QR -> text fallback
+  /* global QRCode */
+  // Try M first (more error correction = easier camera scan); fall back to
+  // L (more capacity) before giving up to text.
+  var levels = [QRCode.CorrectLevel.M, QRCode.CorrectLevel.L];
+  for (var i = 0; i < levels.length; i++) {
+    try {
+      new QRCode(qrEl, { text: text, width: 264, height: 264, correctLevel: levels[i] });
+      return true;
+    } catch (e) {
+      qrEl.innerHTML = "";
+    }
   }
+  return false; // too big for QR -> text fallback
 }
 
 function showTextFallback(text) {
