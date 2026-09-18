@@ -167,6 +167,7 @@ function startBroadcastPairing(pin) {
       if (navigator.wakeLock) navigator.wakeLock.request("screen");
     } catch (e) {}
     setStatus("Creating broadcast offer…");
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
     preferSingleCodec(pc, "video"); // one codec -> smaller offer
@@ -281,6 +282,9 @@ function watchPinFlow() {
     }
     setStatus("Phone found — connecting…");
     el("cast-pin-hint").textContent = "Phone found — connecting…";
+    // Close any previous attempt first: orphaned peer connections pile up
+    // (one per failed handshake) and eventually starve the browser.
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     pc.ontrack = function (ev) {
       var stream = ev.streams && ev.streams[0];
@@ -307,6 +311,7 @@ function watchPinFlow() {
             // phone's next offer republish. Same code, no user action.
             setStatus("Handshake stalled — retrying on the same code…");
             gotOffer = false;
+            if (pc) { try { pc.close(); } catch (e) {} pc = null; }
             stopPairing();
             connect();
           }
@@ -314,6 +319,7 @@ function watchPinFlow() {
       })
       .catch(function (err) {
         gotOffer = false;
+        if (pc) { try { pc.close(); } catch (e) {} pc = null; }
         var why = err && err.message ? err.message : String(err);
         try { console.error("watch handshake failed:", why); } catch (e) {}
         setStatus("Connection failed — retry the handshake. (" + why + ")");
@@ -502,6 +508,7 @@ function broadcastManualFlow() {
       if (navigator.wakeLock) navigator.wakeLock.request("screen");
     } catch (e) {}
     setStatus("Creating broadcast offer…");
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
     preferSingleCodec(pc, "video"); // one codec -> smaller offer -> smaller QR
@@ -554,6 +561,7 @@ function watchManualFlow() {
       return;
     }
     setStatus("Connecting…");
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     pc.ontrack = function (ev) {
       var stream = ev.streams && ev.streams[0];
