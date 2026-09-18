@@ -66,16 +66,20 @@
 
   function videoPos(ev) {
     var v = videoEl();
+    if (!v || !v.videoWidth) return null;
     var r = v.getBoundingClientRect();
     // Convert CSS pixels to video pixels.
     var u = (ev.clientX - r.left) / r.width * v.videoWidth;
     var vv = (ev.clientY - r.top) / r.height * v.videoHeight;
+    // Ignore clicks outside the video frame.
+    if (u < 0 || vv < 0 || u > v.videoWidth || vv > v.videoHeight) return null;
     return { u: Math.round(u), v: Math.round(vv) };
   }
 
   function onVideoClick(ev) {
     if (!active || !selectedId) return;
     var p = videoPos(ev);
+    if (!p) return;
     taps[selectedId] = p;
     setStatus("Tapped '" + labelOf(selectedId) + "' at (" + p.u + ", " + p.v + "). Pick the next point.");
     // Auto-advance to the next untapped point.
@@ -205,7 +209,10 @@
     $("calib-panel").classList.remove("hidden");
     $("calib-apply").disabled = true;
     $("calib-save").disabled = true;
-    v.addEventListener("click", onVideoClick);
+    // Listen on the container, not the video: overlay layers can swallow
+    // clicks on the video element itself. videoPos() maps to video pixels.
+    var wrap = $("camera-wrap");
+    if (wrap) wrap.addEventListener("click", onVideoClick);
     renderList();
     drawMarkers();
     setStatus("Tap where '" + labelOf(selectedId) + "' appears in the video. Click a marker to remove it.");
@@ -214,8 +221,8 @@
 
   function stopTapMode() {
     active = false;
-    var v = videoEl();
-    if (v) v.removeEventListener("click", onVideoClick);
+    var wrap = $("camera-wrap");
+    if (wrap) wrap.removeEventListener("click", onVideoClick);
     window.removeEventListener("resize", drawMarkers);
     var layer = $("calib-markers");
     if (layer) layer.innerHTML = "";
