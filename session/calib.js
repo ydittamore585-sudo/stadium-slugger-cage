@@ -130,10 +130,13 @@
     var refs = [];
     REF_POINTS.forEach(function (rp) {
       if (taps[rp.id]) {
+        // solveHomography's contract is arrays: image:[u,v], world:[x,y].
+        // Passing {u,v}/{x,y} objects silently trips its isFinite guard as
+        // "non-finite coordinates" (r.image[0] is undefined). Never regress.
         refs.push({
           id: rp.id,
-          image: { u: taps[rp.id].u, v: taps[rp.id].v },
-          world: { x: rp.world[0], y: rp.world[1] },
+          image: [taps[rp.id].u, taps[rp.id].v],
+          world: [rp.world[0], rp.world[1]],
         });
       }
     });
@@ -149,7 +152,9 @@
       return;
     }
     if (!res.ok) {
-      setStatus("Insufficient evidence: " + (res.reason || "solve failed") + " — re-tap spread-out points.");
+      // res.reason already carries the "Insufficient evidence:" prefix —
+      // don't prepend it again.
+      setStatus(res.reason + " — re-tap spread-out points.");
       return;
     }
     var meanPx = res.meanPx, maxPx = res.maxPx;
@@ -692,11 +697,11 @@
       var patches = [];
       for (var i = 0; i < refs.length; i++) {
         var r = refs[i];
-        var cx = r.image.u * sx, cy = r.image.v * sy;
+        var cx = r.image[0] * sx, cy = r.image[1] * sy;
         var patch = extractPatch(frame, cx, cy);
         patches.push({
           id: r.id || ("pt" + i),
-          world: [r.world.x, r.world.y],
+          world: [r.world[0], r.world[1]],
           refU: Math.round(cx), refV: Math.round(cy),
           patch: bytesToBase64(patch),
         });
@@ -787,9 +792,9 @@
       setStatus("Auto-adjust failed: scale changed " + medScale.toFixed(2) + "x (allowed 0.85–1.18) — tap manually.");
       return;
     }
-    // Re-solve
+    // Re-solve (array shape per solveHomography's contract — see solve()).
     var refs = found.map(function (f) {
-      return { image: { u: f.image.u, v: f.image.v }, world: { x: f.world.x, y: f.world.y } };
+      return { image: [f.image.u, f.image.v], world: [f.world.x, f.world.y] };
     });
     var res;
     try {
