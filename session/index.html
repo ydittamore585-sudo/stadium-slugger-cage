@@ -77,7 +77,12 @@
       <button id="calib-solve" class="btn primary">Solve</button>
       <button id="calib-apply" class="btn" disabled>Apply calibration</button>
       <button id="calib-save" class="btn" disabled>Save profile</button>
+      <button id="calib-auto" class="btn" title="Re-find saved reference points in the current frame and re-solve automatically">✨ Auto-adjust</button>
       <button id="calib-use-last" class="btn" title="Use the 2026-09-17 validated chair-position calibration (approximate)">📍 Use last position</button>
+      <label class="btn ghost" style="cursor:pointer" title="Load a saved calibration profile (with reference patches)">
+        📂 Load
+        <input type="file" id="calib-load-file" accept=".json,application/json" style="display:none">
+      </label>
       <button id="calib-close" class="btn ghost">Close</button>
     </div>
   </div>
@@ -132,8 +137,8 @@
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
-<script src="cast.js?v=20260917x"></script>
-<script src="calib.js?v=20260917g"></script>
+<script src="cast.js?v=20260917y"></script>
+<script src="calib.js?v=20260917h"></script>
 <script src="session.js?v=20260917g"></script>
 </body>
 </html>

@@ -127,6 +127,7 @@
     REF_POINTS.forEach(function (rp) {
       if (taps[rp.id]) {
         refs.push({
+          id: rp.id,
           image: { u: taps[rp.id].u, v: taps[rp.id].v },
           world: { x: rp.world[0], y: rp.world[1] },
         });
@@ -176,6 +177,15 @@
         numPoints: refs.length,
         verified: false,
       };
+      // Keep the manual result in its own slot — auto-adjust never overwrites it.
+      window.SessionApp.manualCalibration = window.SessionApp.phoneCalibration;
+    } catch (e) {}
+    // Capture reference patches for future auto-adjust (calibrate once).
+    try {
+      var rp = captureRefPatches(refs);
+      if (rp && profile && typeof profile === "object") {
+        profile.refPatches = rp;
+      }
     } catch (e) {}
   }
 
@@ -287,18 +297,328 @@
     solve: solve,
     apply: apply,
     save: save,
+    autoAdjust: autoAdjust,
+    loadProfileFile: loadProfileFile,
     isActive: function () { return active; },
     getProfile: function () { return profile; },
   };
 
+  // === Auto-recalibration: NCC patch matching ===
+  // Calibrate once manually (saves refPatches). Next session, auto-adjust
+  // finds the patches in the new frame and re-solves. Fail-closed.
+
+  var REF_W = 480, REF_H = 270;
+  var PATCH_SIZE = 48;
+  var SEARCH_RADIUS = 40; // ±px in ref-frame coords
+
+  function captureRefFrame() {
+    var v = videoEl();
+    if (!v || !v.videoWidth) return null;
+    var c = document.createElement("canvas");
+    c.width = REF_W; c.height = REF_H;
+    var ctx = c.getContext("2d", { willReadFrequently: true });
+    try {
+      ctx.drawImage(v, 0, 0, REF_W, REF_H);
+    } catch (e) { return null; }
+    var img;
+    try {
+      img = ctx.getImageData(0, 0, REF_W, REF_H);
+    } catch (e) { return null; }
+    var gray = new Uint8Array(REF_W * REF_H);
+    for (var i = 0; i < gray.length; i++) {
+      var r = img.data[i * 4], g = img.data[i * 4 + 1], b = img.data[i * 4 + 2];
+      gray[i] = (0.299 * r + 0.587 * g + 0.114 * b) | 0;
+    }
+    return { w: REF_W, h: REF_H, data: gray };
+  }
+
+  function extractPatch(frame, cx, cy) {
+    var half = PATCH_SIZE / 2;
+    var patch = new Uint8Array(PATCH_SIZE * PATCH_SIZE);
+    for (var y = 0; y < PATCH_SIZE; y++) {
+      for (var x = 0; x < PATCH_SIZE; x++) {
+        var sx = Math.round(cx - half + x);
+        var sy = Math.round(cy - half + y);
+        if (sx < 0) sx = 0; else if (sx >= frame.w) sx = frame.w - 1;
+        if (sy < 0) sy = 0; else if (sy >= frame.h) sy = frame.h - 1;
+        patch[y * PATCH_SIZE + x] = frame.data[sy * frame.w + sx];
+      }
+    }
+    return patch;
+  }
+
+  function bytesToBase64(bytes) {
+    var s = "";
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+
+  function base64ToBytes(b64) {
+    var s = atob(b64);
+    var bytes = new Uint8Array(s.length);
+    for (var i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    return bytes;
+  }
+
+  function patchStats(patch) {
+    var n = patch.length, sum = 0;
+    for (var i = 0; i < n; i++) sum += patch[i];
+    var mean = sum / n;
+    var norm = 0;
+    for (var j = 0; j < n; j++) {
+      var d = patch[j] - mean;
+      norm += d * d;
+    }
+    return { mean: mean, norm: Math.sqrt(norm) };
+  }
+
+  function buildIntegral(gray, w, h) {
+    var W1 = w + 1;
+    var sum = new Float64Array(W1 * (h + 1));
+    var sq = new Float64Array(W1 * (h + 1));
+    for (var y = 0; y < h; y++) {
+      var rs = 0, rq = 0;
+      for (var x = 0; x < w; x++) {
+        var v = gray[y * w + x];
+        rs += v; rq += v * v;
+        sum[(y + 1) * W1 + (x + 1)] = sum[y * W1 + (x + 1)] + rs;
+        sq[(y + 1) * W1 + (x + 1)] = sq[y * W1 + (x + 1)] + rq;
+      }
+    }
+    return { sum: sum, sq: sq, w: w };
+  }
+
+  function rectSum(ii, x0, y0, x1, y1, isSq) {
+    var W1 = ii.w + 1;
+    var a = isSq ? ii.sq : ii.sum;
+    return a[y1 * W1 + x1] - a[y0 * W1 + x1] - a[y1 * W1 + x0] + a[y0 * W1 + x0];
+  }
+
+  // NCC template match. Returns {x, y, peak, margin}.
+  function nccMatch(frame, ii, patch, pMean, pNorm, cx, cy, radius) {
+    var N = PATCH_SIZE * PATCH_SIZE;
+    var half = PATCH_SIZE / 2;
+    if (pNorm < 1e-6) return { x: cx, y: cy, peak: 0, margin: 0 };
+    var diam = radius * 2 + 1;
+    var scores = new Float32Array(diam * diam);
+    var xs = new Int16Array(diam * diam);
+    var ys = new Int16Array(diam * diam);
+    var count = 0;
+    // Zero-mean patch once
+    var zp = new Float32Array(N);
+    for (var i = 0; i < N; i++) zp[i] = patch[i] - pMean;
+    for (var dy = -radius; dy <= radius; dy++) {
+      for (var dx = -radius; dx <= radius; dx++) {
+        var x = Math.round(cx + dx), y = Math.round(cy + dy);
+        var x0 = x - half, y0 = y - half;
+        if (x0 < 0 || y0 < 0 || x0 + PATCH_SIZE > frame.w || y0 + PATCH_SIZE > frame.h) continue;
+        var s = rectSum(ii, x0, y0, x0 + PATCH_SIZE, y0 + PATCH_SIZE, false);
+        var s2 = rectSum(ii, x0, y0, x0 + PATCH_SIZE, y0 + PATCH_SIZE, true);
+        var mean = s / N;
+        var vari = s2 / N - mean * mean;
+        if (vari < 1e-6) continue;
+        var std = Math.sqrt(vari);
+        var cross = 0;
+        for (var py = 0; py < PATCH_SIZE; py++) {
+          var fo = (y0 + py) * frame.w + x0;
+          var po = py * PATCH_SIZE;
+          for (var px = 0; px < PATCH_SIZE; px++) {
+            cross += zp[po + px] * frame.data[fo + px];
+          }
+        }
+        var ncc = cross / (pNorm * std * Math.sqrt(N));
+        scores[count] = ncc;
+        xs[count] = x; ys[count] = y;
+        count++;
+      }
+    }
+    if (count === 0) return { x: cx, y: cy, peak: 0, margin: 0 };
+    // Find best
+    var bi = 0;
+    for (var k = 1; k < count; k++) if (scores[k] > scores[bi]) bi = k;
+    var peak = scores[bi], bx = xs[bi], by = ys[bi];
+    // Find best outside 3px radius
+    var second = -2;
+    for (var m = 0; m < count; m++) {
+      var ddx = xs[m] - bx, ddy = ys[m] - by;
+      if (ddx * ddx + ddy * ddy < 9) continue;
+      if (scores[m] > second) second = scores[m];
+    }
+    var margin = second > 1e-6 ? peak / second : (peak > 0 ? 99 : 0);
+    return { x: bx, y: by, peak: peak, margin: margin };
+  }
+
+  // Capture refPatches after a successful manual solve. Called from solve().
+  function captureRefPatches(refs) {
+    try {
+      var frame = captureRefFrame();
+      if (!frame) return null;
+      var v = videoEl();
+      var sx = REF_W / v.videoWidth, sy = REF_H / v.videoHeight;
+      var patches = [];
+      for (var i = 0; i < refs.length; i++) {
+        var r = refs[i];
+        var cx = r.image.u * sx, cy = r.image.v * sy;
+        var patch = extractPatch(frame, cx, cy);
+        patches.push({
+          id: r.id || ("pt" + i),
+          world: [r.world.x, r.world.y],
+          refU: Math.round(cx), refV: Math.round(cy),
+          patch: bytesToBase64(patch),
+        });
+      }
+      return {
+        frameW: REF_W, frameH: REF_H,
+        videoW: v.videoWidth, videoH: v.videoHeight,
+        patches: patches,
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function autoAdjust() {
+    var prof = profile;
+    if (!prof || !prof.refPatches || !prof.refPatches.patches || prof.refPatches.patches.length < 4) {
+      setStatus("Auto-adjust needs a manual calibration with saved reference patches first. Tap points + Solve, then try again. (Or load a saved profile.)");
+      return;
+    }
+    setStatus("Auto-adjust: capturing frame…");
+    $("calib-auto").disabled = true;
+    setTimeout(function () {
+      try {
+        doAutoAdjust(prof);
+      } catch (e) {
+        setStatus("Auto-adjust error: " + (e && e.message ? e.message : e) + " — tap manually.");
+      }
+      var ab = $("calib-auto");
+      if (ab) ab.disabled = false;
+    }, 60);
+  }
+
+  function doAutoAdjust(prof) {
+    var rp = prof.refPatches;
+    var frame = captureRefFrame();
+    if (!frame) { setStatus("Auto-adjust: no video frame — pair the phone first."); return; }
+    var v = videoEl();
+    var sx = v.videoWidth / REF_W, sy = v.videoHeight / REF_H;
+    var ii = buildIntegral(frame.data, frame.w, frame.h);
+    var found = [];
+    var total = rp.patches.length;
+    for (var i = 0; i < total; i++) {
+      var p = rp.patches[i];
+      setStatus("Auto-adjust: matching point " + (i + 1) + "/" + total + " (" + p.id + ")…");
+      var patch = base64ToBytes(p.patch);
+      var st = patchStats(patch);
+      var m = nccMatch(frame, ii, patch, st.mean, st.norm, p.refU, p.refV, SEARCH_RADIUS);
+      if (m.peak >= 0.75 && m.margin >= 1.15) {
+        found.push({
+          id: p.id,
+          image: { u: m.x * sx, v: m.y * sy },
+          world: { x: p.world[0], y: p.world[1] },
+          peak: m.peak,
+          refU: p.refU * sx, refV: p.refV * sy, // old position in current full-res px
+        });
+      }
+    }
+    if (found.length < 4) {
+      setStatus("Auto-adjust failed: only " + found.length + " of " + total + " points matched confidently (need 4+). Lighting or camera moved too much — tap manually.");
+      return;
+    }
+    // Gate: implied shift < 150px at full res (mean centroid shift)
+    var ox = 0, oy = 0, nx = 0, ny = 0;
+    for (var j = 0; j < found.length; j++) {
+      ox += found[j].refU; oy += found[j].refV;
+      nx += found[j].image.u; ny += found[j].image.v;
+    }
+    ox /= found.length; oy /= found.length;
+    nx /= found.length; ny /= found.length;
+    var shiftPx = Math.hypot(nx - ox, ny - oy);
+    if (shiftPx > 150) {
+      setStatus("Auto-adjust failed: camera shifted ~" + Math.round(shiftPx) + "px (limit 150px) — different mount, tap manually.");
+      return;
+    }
+    // Gate: scale change 0.85–1.18x (median pairwise distance ratio)
+    var ratios = [];
+    for (var a = 0; a < found.length; a++) {
+      for (var b = a + 1; b < found.length; b++) {
+        var od = Math.hypot(found[a].refU - found[b].refU, found[a].refV - found[b].refV);
+        var nd = Math.hypot(found[a].image.u - found[b].image.u, found[a].image.v - found[b].image.v);
+        if (od > 1e-6) ratios.push(nd / od);
+      }
+    }
+    ratios.sort(function (x, y) { return x - y; });
+    var medScale = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+    if (medScale < 0.85 || medScale > 1.18) {
+      setStatus("Auto-adjust failed: scale changed " + medScale.toFixed(2) + "x (allowed 0.85–1.18) — tap manually.");
+      return;
+    }
+    // Re-solve
+    var refs = found.map(function (f) {
+      return { image: { u: f.image.u, v: f.image.v }, world: { x: f.world.x, y: f.world.y } };
+    });
+    var res;
+    try {
+      res = CageCalibration.solveHomography(refs);
+    } catch (e) {
+      setStatus("Auto-adjust failed: solve error — tap manually.");
+      return;
+    }
+    if (!res.ok || res.meanPx > 6) {
+      setStatus("Auto-adjust failed: reprojection " + (res.meanPx ? res.meanPx.toFixed(1) : "?") + "px over 6px bar — tap manually.");
+      return;
+    }
+    // Success — store in the auto slot, NEVER overwrite manual.
+    window.SessionApp = window.SessionApp || {};
+    window.SessionApp.phoneCalibration = {
+      H: res.H, Hinv: res.Hinv,
+      meanPx: res.meanPx, maxPx: res.maxPx,
+      numPoints: found.length,
+      verified: false,
+      autoAdjusted: true,
+    };
+    window.SessionApp.manualCalibration = window.SessionApp.manualCalibration || null; // manual slot untouched
+    var dx = Math.round(nx - ox), dy = Math.round(ny - oy);
+    setStatus("Auto-adjusted ✓ " + found.length + "/" + total + " points, shift (" + dx + ", " + dy + ")px, scale " + medScale.toFixed(2) + "x, mean error " + res.meanPx.toFixed(1) + "px. Numbers live — tap Apply or re-tap manually if this looks off.");
+    var ab2 = $("calib-apply");
+    if (ab2) ab2.disabled = false;
+  }
+
+  function loadProfileFile(file) {
+    if (!file) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      try {
+        var p = JSON.parse(rd.result);
+        if (!p.refPatches || !p.refPatches.patches) {
+          setStatus("That file has no reference patches — it was saved before auto-adjust existed. Do a manual calibration first.");
+          return;
+        }
+        profile = p;
+        var n = p.refPatches.patches.length;
+        setStatus("Loaded profile with " + n + " reference patches (" + (p.label || p.notes || "saved calibration") + "). Hit Auto-adjust.");
+        var ab = $("calib-auto");
+        if (ab) ab.disabled = false;
+      } catch (e) {
+        setStatus("Couldn't parse that file: " + (e && e.message ? e.message : e));
+      }
+    };
+    rd.readAsText(file);
+  }
+
   // Wire panel buttons once the DOM is ready.
   function wire() {
-    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last");
+    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), lf = $("calib-load-file");
     if (s) s.onclick = solve;
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;
     if (c) c.onclick = close;
     if (ul) ul.onclick = useLastPosition;
+    if (au) au.onclick = autoAdjust;
+    if (lf) lf.onchange = function () {
+      if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
+      lf.value = "";
+    };
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", wire);
