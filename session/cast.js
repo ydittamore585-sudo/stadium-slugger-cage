@@ -755,8 +755,11 @@ document.addEventListener("DOMContentLoaded", function () {
   el("btn-cast-close").addEventListener("click", closePanel);
   var switchCam = el("btn-switch-cam");
   if (switchCam) switchCam.addEventListener("click", switchCamera);
+  var buildTxt = "build " + CAST_BUILD;
   var buildTag = el("build-tag");
-  if (buildTag) buildTag.textContent = "build " + CAST_BUILD;
+  if (buildTag) buildTag.textContent = buildTxt;
+  var buildTagTop = el("build-tag-top");
+  if (buildTagTop) buildTagTop.textContent = buildTxt;
   var refreshBtn = el("btn-refresh");
   if (refreshBtn) refreshBtn.addEventListener("click", function () {
     // Cache-busting reload: no tab-closing needed, and the build tag
