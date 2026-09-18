@@ -17,10 +17,9 @@ header h1 { font-size: 1.3rem; margin: 8px 0; }
 #cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 #overlay { pointer-events: none; }
 #camera-hint {
-  position: absolute; bottom: 8px; left: 8px; right: 8px;
-  background: rgba(0,0,0,0.65); padding: 8px; border-radius: 8px;
+  margin: 8px 0 0; padding: 8px; border-radius: 8px;
+  background: rgba(255,255,255,0.06);
   font-size: 0.75rem; text-align: center; color: #cdd8ee;
-  pointer-events: none;
 }
 #controls2 { display: flex; gap: 10px; margin: 0 0 14px; }
 #clip-toggle-wrap { display: block; margin: 0 0 10px; font-size: 0.9rem; color: #cdd8ee; }
