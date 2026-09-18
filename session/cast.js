@@ -448,6 +448,13 @@ function watchPinFlow() {
         rsb.classList.remove("hidden");
         rsb.onclick = function () { if (link) link.send({ t: "switch" }); };
       }
+      var calb = el("btn-calibrate");
+      if (calb) {
+        calb.classList.remove("hidden");
+        calb.onclick = function () {
+          if (window.PhoneCalib) window.PhoneCalib.open();
+        };
+      }
     };
     pc.onconnectionstatechange = function () {
       var st = "";

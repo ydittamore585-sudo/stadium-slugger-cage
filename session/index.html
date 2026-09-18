@@ -20,6 +20,7 @@
   <div id="camera-wrap">
     <video id="cam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
+    <div id="calib-markers"></div>
     <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
   </div>
 
@@ -64,6 +65,20 @@
     <button id="btn-cast-close">Close</button>
     <button id="btn-switch-cam" class="hidden" title="Flip between front and rear camera">⇄ Switch camera</button>
     <button id="btn-switch-cam-remote" class="hidden" title="Tell the phone to flip between front and rear camera">⇄ Switch phone camera</button>
+    <button id="btn-calibrate" class="hidden" title="Tap known points on the phone's live feed to calibrate">📐 Calibrate phone camera</button>
+  </div>
+
+  <div id="calib-panel" class="hidden">
+    <h3>📐 Calibrate phone camera <span id="calib-count" class="muted"></span></h3>
+    <p class="hint">Pick a point, then tap exactly where it appears in the video above. 6+ spread-out points beats 4 clustered ones. Click a marker to remove it. The phone must not move after this.</p>
+    <div id="calib-points"></div>
+    <div id="calib-status" class="hint"></div>
+    <div class="row">
+      <button id="calib-solve" class="btn primary">Solve</button>
+      <button id="calib-apply" class="btn" disabled>Apply calibration</button>
+      <button id="calib-save" class="btn" disabled>Save profile</button>
+      <button id="calib-close" class="btn ghost">Close</button>
+    </div>
   </div>
 
   <div id="motion-tuning">
@@ -116,7 +131,8 @@
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
-<script src="cast.js?v=20260917p"></script>
+<script src="cast.js?v=20260917q"></script>
+<script src="calib.js?v=20260917a"></script>
 <script src="session.js?v=20260917g"></script>
 </body>
 </html>
