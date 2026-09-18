@@ -204,8 +204,10 @@ function startBroadcastPairing(pin) {
             stopPairing();
             pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
               setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
-            }).catch(function () {
-              setStatus("Pairing failed — try again.");
+            }).catch(function (err) {
+              var why = err && err.message ? err.message : String(err);
+              try { console.error("broadcast answer failed:", why); } catch (e) {}
+              setStatus("Pairing failed — try again. (" + why + ")");
             });
           },
           onError: function () { scheduleReconnect("Pairing service hiccup — retrying…"); },
@@ -310,9 +312,11 @@ function watchPinFlow() {
           }
         }, 120000);
       })
-      .catch(function () {
+      .catch(function (err) {
         gotOffer = false;
-        setStatus("Connection failed — retry the handshake.");
+        var why = err && err.message ? err.message : String(err);
+        try { console.error("watch handshake failed:", why); } catch (e) {}
+        setStatus("Connection failed — retry the handshake. (" + why + ")");
       });
   }
 }
