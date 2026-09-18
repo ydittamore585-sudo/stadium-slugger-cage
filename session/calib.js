@@ -35,6 +35,7 @@
   var selectedId = null;
   var active = false;
   var profile = null;     // solved CageCalibration profile
+  var touchHandler = null;
 
   function videoEl() { return $("cam"); }
 
@@ -211,8 +212,21 @@
     $("calib-save").disabled = true;
     // Listen on the container, not the video: overlay layers can swallow
     // clicks on the video element itself. videoPos() maps to video pixels.
+    // Support both mouse clicks and touchscreen taps.
     var wrap = $("camera-wrap");
-    if (wrap) wrap.addEventListener("click", onVideoClick);
+    if (wrap) {
+      wrap.addEventListener("click", onVideoClick);
+      touchHandler = function (ev) {
+        // Convert the first touch to a click-like event.
+        if (ev.touches && ev.touches.length > 0) {
+          var t = ev.touches[0];
+          onVideoClick(t);
+          ev.preventDefault();
+        }
+      };
+      wrap.addEventListener("touchstart", touchHandler, { passive: false });
+      wrap.style.cursor = "crosshair";
+    }
     renderList();
     drawMarkers();
     setStatus("Tap where '" + labelOf(selectedId) + "' appears in the video. Click a marker to remove it.");
@@ -222,7 +236,12 @@
   function stopTapMode() {
     active = false;
     var wrap = $("camera-wrap");
-    if (wrap) wrap.removeEventListener("click", onVideoClick);
+    if (wrap) {
+      wrap.removeEventListener("click", onVideoClick);
+      if (touchHandler) wrap.removeEventListener("touchstart", touchHandler);
+      wrap.style.cursor = "";
+    }
+    touchHandler = null;
     window.removeEventListener("resize", drawMarkers);
     var layer = $("calib-markers");
     if (layer) layer.innerHTML = "";
