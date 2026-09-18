@@ -337,6 +337,32 @@ function analyzeSwing(trail) {
   };
 }
 
+/* Audible swing feedback: one beep = swing detected, a second higher
+   beep = ball tracked with numbers. Lets the batter tune the detector by
+   ear without watching the laptop. */
+var audioCtx = null, soundOn = true;
+function beep(freq, durMs) {
+  if (!soundOn) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    var t = audioCtx.currentTime;
+    var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + durMs / 1000);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t + durMs / 1000 + 0.05);
+  } catch (e) { /* audio is a nicety; never break the session */ }
+}
+document.getElementById("btn-sound").addEventListener("click", function (ev) {
+  soundOn = !soundOn;
+  ev.target.textContent = soundOn ? "🔊 Sound on" : "🔇 Sound off";
+  if (soundOn) beep(880, 120);
+});
+
 /* ------------------------------------------------------------------ */
 /* Swing pipeline                                                      */
 /* ------------------------------------------------------------------ */
@@ -347,6 +373,7 @@ function onSwingDetected() {
   state.swingCount++;
   mSwings.textContent = state.swingCount;
   drawSwingMarker();
+  beep(880, 150);
   captureSwingClip(state.swingCount);
 
   var swingEntry = {
@@ -362,6 +389,7 @@ function onSwingDetected() {
     state.swings.push(swingEntry);
     renderSwing(swingEntry);
     if (result.tracked) {
+      beep(1320, 120); // second, higher beep: the ball was tracked
       mEV.textContent = result.exitVeloMph.toFixed(0) + " mph";
       mLA.textContent = result.launchAngleDeg.toFixed(0) + "°";
     }
@@ -546,6 +574,11 @@ function startSession() {
   mRec.textContent = clipToggle.checked ? "CLIPS" : "OFF";
   prevFrame = null;
   consecHot = 0; quietFrames = 0; armed = true;
+  // Prime audio on the user's click so swing beeps aren't blocked later.
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) {}
   ensureLoop();
 }
 
