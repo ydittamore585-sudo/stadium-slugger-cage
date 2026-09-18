@@ -176,7 +176,7 @@ function startBroadcastPairing(pin) {
     }).then(function () {
       return waitIceComplete(pc);
     }).then(function () {
-      var offerMsg = encodeMsg("offer", pc.localDescription.sdp);
+      var offerMsg = fullSdpMsg("offer", pc.localDescription.sdp);
       var answered = false;
       setStatus("Pairing…");
       // A blipped connection must not strand the mounted phone: wait a few
@@ -301,7 +301,7 @@ function watchPinFlow() {
       .then(function (ans) { return pc.setLocalDescription(ans); })
       .then(function () { return waitIceComplete(pc); })
       .then(function () {
-        var answerMsg = encodeMsg("answer", pc.localDescription.sdp);
+        var answerMsg = fullSdpMsg("answer", pc.localDescription.sdp);
         var sendAnswer = function () { if (!connected && link) link.send(JSON.parse(answerMsg)); };
         sendAnswer();
         republishTimer = setInterval(sendAnswer, 2500);
@@ -321,8 +321,12 @@ function watchPinFlow() {
         gotOffer = false;
         if (pc) { try { pc.close(); } catch (e) {} pc = null; }
         var why = err && err.message ? err.message : String(err);
-        try { console.error("watch handshake failed:", why); } catch (e) {}
-        setStatus("Connection failed — retry the handshake. (" + why + ")");
+        var mline = "";
+        try {
+          mline = (d.sdp || "").split(/\r\n|\n/).filter(function (l) { return l.indexOf("m=") === 0; })[0] || "";
+        } catch (e) {}
+        try { console.error("watch handshake failed:", why, "got m-line:", mline); } catch (e) {}
+        setStatus("Connection failed — retry the handshake. (" + why + (mline ? " | got: " + mline : "") + ")");
       });
   }
 }
@@ -392,6 +396,13 @@ function encodeMsg(type, sdp) {
   /* global LZString */
   var small = minifySdp(sdp);
   return JSON.stringify({ t: type, s: LZString.compressToBase64(small) });
+}
+
+// PIN/MQTT pairing: no size constraint, so send the phone's SDP exactly as
+// its WebRTC stack generated it — no minifier in the path. (The minifier
+// exists only to fit handshakes into scannable QR codes for manual pairing.)
+function fullSdpMsg(type, sdp) {
+  return JSON.stringify({ t: type, sdp: sdp });
 }
 
 function decodeMsg(text) {
