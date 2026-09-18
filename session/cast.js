@@ -26,6 +26,16 @@ var scanVideo = null, scanCanvas = null;
 var pc = null, localStream = null, scanStream = null, scanning = false;
 var mode = null; // 'broadcast' | 'watch'
 
+// Build tag, derived from this script's own ?v= cache-buster: shown in the
+// footer so both devices can confirm they're running the same build.
+var CAST_BUILD = (function () {
+  try {
+    var s = (document.currentScript && document.currentScript.src) || "";
+    var m = s.match(/[?&]v=([0-9A-Za-z]+)/);
+    return m ? m[1] : "dev";
+  } catch (e) { return "dev"; }
+})();
+
 // PIN pairing state
 var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
@@ -609,6 +619,14 @@ document.addEventListener("DOMContentLoaded", function () {
   el("btn-broadcast").addEventListener("click", function () { showPanel("broadcast"); });
   el("btn-watch").addEventListener("click", function () { showPanel("watch"); });
   el("btn-cast-close").addEventListener("click", closePanel);
+  var buildTag = el("build-tag");
+  if (buildTag) buildTag.textContent = "build " + CAST_BUILD;
+  var refreshBtn = el("btn-refresh");
+  if (refreshBtn) refreshBtn.addEventListener("click", function () {
+    // Cache-busting reload: no tab-closing needed, and the build tag
+    // afterwards proves the newest deploy is what's actually running.
+    location.replace(location.pathname + "?fresh=" + Date.now());
+  });
   wireManualToggle();
   el("btn-copy-code").addEventListener("click", function () {
     el("cast-text").select();

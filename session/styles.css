@@ -32,6 +32,9 @@ button.big {
 #btn-start:disabled { background: #2a3350; color: #777; }
 #btn-stop { background: #a02a2a; color: #fff; }
 #btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+#build-bar { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid #232c47; }
+#build-tag { font-size: 0.75rem; color: #8a9bbd; font-family: monospace; }
+#btn-refresh { background: #232c47; color: #cfd8f3; border: 1px solid #34406a; border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
 .hidden { display: none !important; }
 #live-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
 .metric { background: #141b2e; border-radius: 10px; padding: 10px 6px; text-align: center; }
