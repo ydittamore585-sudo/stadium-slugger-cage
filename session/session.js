@@ -176,15 +176,20 @@ function initCamera() {
 // A swing needs hotFrac above the sensitivity threshold for several
 // frames in a row; then the scene must go quiet before re-arming, so one
 // long motion can't log a burst of phantom swings.
-var SWING_ROI = { x: 0.20, y: 0.30, w: 0.45, h: 0.50 };
+// The trigger ROI covers the full cage width: the batter's position in
+// the frame moves with the phone mount, and a hardcoded box in the middle
+// of the frame silently misses real swings (30+ unlogged) while firing on
+// irrelevant motion elsewhere. Thresholds are scaled for the larger area
+// (hotFrac is a fraction of ROI pixels).
+var SWING_ROI = { x: 0, y: 0.25, w: 1.0, h: 0.55 };
 var HOT_PX_DIFF = 14;        // |luma diff| for a pixel to count as moving hard
-var QUIET_FRAC = 0.015;      // below this the scene counts as quiet
+var QUIET_FRAC = 0.006;      // below this the scene counts as quiet
 var QUIET_FRAMES = 8;        // quiet frames (~0.5 s) needed to re-arm
 var BIAS_REJECT = 0.6;       // biasRatio above this = exposure shift: ignore
 var SENS_LEVELS = {
-  calm:      { hotFrac: 0.16, frames: 4 },
-  normal:    { hotFrac: 0.09, frames: 3 },
-  sensitive: { hotFrac: 0.05, frames: 2 }
+  calm:      { hotFrac: 0.065, frames: 4 },
+  normal:    { hotFrac: 0.037, frames: 3 },
+  sensitive: { hotFrac: 0.020, frames: 2 }
 };
 var motionLevel = "normal";
 var consecHot = 0, quietFrames = 0, armed = true;
@@ -1050,6 +1055,7 @@ function captureSwingClip(swingId) {
   if (!sessionRecorder || sessionRecorder.state === "inactive") return;
   var pre = clipRing.slice(-CLIP_PREROLL_CHUNKS); // refs — safe against later shifts
   var lastPre = clipRing.length ? clipRing[clipRing.length - 1] : null;
+  var tPre = Date.now();
   setTimeout(function () {
     try {
       var post = [];
@@ -1068,8 +1074,17 @@ function captureSwingClip(swingId) {
         chunks.unshift(clipHeaderChunk);
       }
       var blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "video/webm" });
-      swingClips.push({ id: swingId, blob: blob });
-      attachClipPlayer(swingId, blob);
+      var durationMs = Date.now() - tPre;
+      // Stamp the real duration into the WebM header so players show a
+      // length and can seek. fixWebmDuration is fail-safe: on any parse
+      // problem it resolves with the original blob.
+      var fix = (typeof fixWebmDuration === "function")
+        ? fixWebmDuration(blob, durationMs)
+        : Promise.resolve(blob);
+      fix.then(function (fixed) {
+        swingClips.push({ id: swingId, blob: fixed });
+        attachClipPlayer(swingId, fixed);
+      });
     } catch (e) { /* clips are optional; never break the session */ }
   }, CLIP_POSTROLL_MS);
 }
