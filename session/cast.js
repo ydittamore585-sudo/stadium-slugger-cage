@@ -55,7 +55,15 @@ function storeGet(k) { try { return localStorage.getItem(k); } catch (e) { retur
 function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
 function storeDel(k) { try { localStorage.removeItem(k); } catch (e) {} }
 
-var RTC_CFG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+var RTC_CFG = { iceServers: [
+  { urls: "stun:stun.l.google.com:19302" },
+  // TURN relay fallback: if the two devices can't reach each other directly
+  // (obfuscated host candidates, hairpin NAT, AP isolation), media relays
+  // through here instead of failing. DTLS-SRTP stays end-to-end encrypted;
+  // the relay sees only packet metadata, never video content.
+  { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"],
+    username: "openrelayproject", credential: "openrelayproject" }
+] };
 
 function el(id) { return document.getElementById(id); }
 
@@ -559,7 +567,7 @@ function decodeMsg(text) {
 function waitIceComplete(pc) {
   return new Promise(function (resolve) {
     if (pc.iceGatheringState === "complete") return resolve();
-    var to = setTimeout(resolve, 6000); // never hang forever
+    var to = setTimeout(resolve, 10000); // never hang forever (TURN gathering can be slow)
     pc.onicegatheringstatechange = function () {
       if (pc.iceGatheringState === "complete") { clearTimeout(to); resolve(); }
     };
