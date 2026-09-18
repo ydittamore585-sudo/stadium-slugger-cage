@@ -111,7 +111,12 @@ var state = {
   sessionStart: 0,
   swings: [],
   swingCount: 0,
-  stream: null
+  stream: null,
+  // Step 9: stream-lifecycle forensics.
+  streamGaps: [],   // [{startSec, endSec}] — the inbound feed was dead
+  streamOK: true,   // false while the phone track is muted/disconnected
+  gapStart: 0,      // session-seconds when the current gap began
+  clipMime: null    // MIME string chosen for the clip recorder
 };
 
 // Processing canvas (downscaled for speed).
@@ -493,6 +498,19 @@ function activeHomography() {
   return { H: H, Hinv: Hinv };
 }
 
+// Step 12: height scale for the vz noise floor. Prefer the phone
+// calibration's bat-measured value (mount-specific) over the baked-in
+// laptop-chair number — silently using the chair value at the phone's
+// depth is a wrong constant wearing a right-looking label.
+function activeHeightScale() {
+  try {
+    var live = window.SessionApp && window.SessionApp.phoneCalibration;
+    var h = live && live.heightScalePxPerM;
+    if (isFinite(h) && h > 0) return h;
+  } catch (e) {}
+  return PROFILE.heightScale.pxPerM;
+}
+
 // worldToImage: invert the ray model. World (x,y) at height z (m) -> pixel.
 // From imageToWorld: (x,y) = C_xy + t*(G0-C_xy), t=(C.z-z)/C.z,
 // so G0 = C_xy + ((x,y)-C_xy)/t, then (u,v) = applyH(Hinv, G0).
@@ -545,7 +563,7 @@ function analyzeSwing(trail) {
   if (w0) {
     var distBall = Math.sqrt((w0.x - CAM.x) * (w0.x - CAM.x) + (w0.y - CAM.y) * (w0.y - CAM.y));
     var distCalib = Math.sqrt(1.9 * 1.9 + 1.5 * 1.5); // calib sample at ~(1.9,1.5)
-    var pxPerM_local = PROFILE.heightScale.pxPerM * (distCalib / distBall);
+    var pxPerM_local = activeHeightScale() * (distCalib / distBall);
     var vzNoise = VPERP_NOISE_PXPS / pxPerM_local; // m/s
     if (Math.abs(vz) >= vzNoise) {
       launchAngleDeg = Math.atan2(vz, vHoriz) * 180 / Math.PI;
@@ -797,6 +815,13 @@ function loop(ts) {
       updateMotionMeter(m.hotFrac);
     }
     if (!state.recording) return;
+    if (!state.streamOK) {
+      // Step 9: stream lost — the frame is frozen, so any "motion" here
+      // would be phantom swings. The meter above keeps updating; the
+      // detector is gated until the feed recovers.
+      consecHot = 0;
+      return;
+    }
     var s = SENS_LEVELS[motionLevel];
     var candidate = m.hotFrac >= s.hotFrac && m.biasRatio < BIAS_REJECT;
     if (candidate) consecHot++; else consecHot = 0;
@@ -856,6 +881,9 @@ function startSession() {
   state.swings = [];
   state.swingCount = 0;
   state.sessionStart = Date.now();
+  state.streamGaps = [];   // Step 9: reset the stream-death ledger
+  state.streamOK = true;
+  state.gapStart = 0;
   swingClips = [];
   // Stream fingerprint at session start (from cast.js health poll, if paired).
   try {
@@ -948,6 +976,7 @@ function startClipRing() {
   if (!state.stream || !window.MediaRecorder) return;
   try {
     var mime = pickSupportedMime();
+    state.clipMime = mime || null; // Step 10 forensics: stamp the chosen codec
     var opts = { videoBitsPerSecond: 4 * 1000 * 1000 };
     if (mime) opts.mimeType = mime;
     sessionRecorder = new MediaRecorder(state.stream, opts);
@@ -1028,6 +1057,19 @@ function downloadSession() {
     profile: { label: PROFILE.label, verified: PROFILE.verified },
     streamStart: state.streamStart || null,
     streamEnd: streamEnd,
+    streamGaps: state.streamGaps || [],
+    clipMime: state.clipMime || null,
+    calibration: (function () {
+      try {
+        var lc = window.SessionApp && window.SessionApp.phoneCalibration;
+        if (!lc) return null;
+        return {
+          label: lc.label || null,
+          autoAdjusted: !!lc.autoAdjusted,
+          meanPx: isFinite(lc.meanPx) ? +lc.meanPx.toFixed(2) : null
+        };
+      } catch (e) { return null; }
+    })(),
     swings: state.swings.map(function (s) {
       var r = s.result || {};
       return {
@@ -1150,6 +1192,28 @@ window.SessionApp.onRemoteStream = function (stream) {
     profileInfoEl.textContent =
       "Profile: " + PROFILE.label + " (verified=" + PROFILE.verified + ") loaded from file.";
     setProfileWarning(p.verified ? "" : "Profile is not verified — numbers are uncalibrated estimates.");
+  };
+
+  // Step 9: stream-lifecycle hooks, called by cast.js's watch monitor.
+  // streamMuted opens a gap in the session ledger and disarms the
+  // detector; streamLive closes the gap. Idempotent — safe to call twice.
+  window.SessionApp.streamMuted = function () {
+    if (!state.recording) return;
+    if (state.streamOK) {
+      state.streamOK = false;
+      state.gapStart = (Date.now() - state.sessionStart) / 1000;
+    }
+    armed = false;
+  };
+  window.SessionApp.streamLive = function () {
+    if (!state.streamOK && state.gapStart) {
+      state.streamGaps.push({
+        startSec: +state.gapStart.toFixed(1),
+        endSec: +((Date.now() - state.sessionStart) / 1000).toFixed(1)
+      });
+    }
+    state.streamOK = true;
+    state.gapStart = 0;
   };
 
 document.getElementById("profile-file").addEventListener("change", function (ev) {

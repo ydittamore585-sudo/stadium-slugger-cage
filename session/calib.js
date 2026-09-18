@@ -36,6 +36,10 @@
   var active = false;
   var profile = null;     // solved CageCalibration profile
   var touchHandler = null;
+  var hasSolvedProfile = false; // solve() ran on this page load
+  var lastHeightScale = null;   // Step 12: bat-measured {pxPerM,...}, survives re-solves
+  var heightActive = false, heightTaps = []; // Step 12: bat tap mode
+  var verifyActive = false, verifyTap = null; // Step 1: ball verification mode
 
   function videoEl() { return $("cam"); }
 
@@ -168,6 +172,11 @@
     } catch (e) {
       profile = { solveResult: res };
     }
+    // Step 12: carry a bat-measured height scale across re-solves —
+    // the mount didn't move, only the taps did.
+    if (lastHeightScale && profile && typeof profile === "object") {
+      profile.heightScale = lastHeightScale;
+    }
     // Stash the homography where the session detector can use it.
     try {
       window.SessionApp = window.SessionApp || {};
@@ -177,9 +186,13 @@
         numPoints: refs.length,
         verified: false,
       };
+      if (lastHeightScale) {
+        window.SessionApp.phoneCalibration.heightScalePxPerM = lastHeightScale.pxPerM;
+      }
       // Keep the manual result in its own slot — auto-adjust never overwrites it.
       window.SessionApp.manualCalibration = window.SessionApp.phoneCalibration;
     } catch (e) {}
+    hasSolvedProfile = true;
     // Capture reference patches for future auto-adjust (calibrate once).
     try {
       var rp = captureRefPatches(refs);
@@ -215,6 +228,7 @@
           label: preset.label,
         };
         profile = { preset: preset };
+        hasSolvedProfile = false;
         setStatus("Loaded '" + preset.label + "' — APPROXIMATE (phone within inches of that spot, not exact). Treat numbers as estimates. For best accuracy, do the 6-tap calibration.");
         $("calib-apply").disabled = false;
         $("calib-save").disabled = false;
@@ -244,6 +258,7 @@
     active = true;
     taps = {};
     profile = null;
+    hasSolvedProfile = false;
     selectedId = REF_POINTS[0].id;
     $("calib-panel").classList.remove("hidden");
     $("calib-apply").disabled = true;
@@ -287,7 +302,225 @@
 
   function close() {
     stopTapMode();
+    stopHeightMode();
+    stopVerifyMode();
     $("calib-panel").classList.add("hidden");
+  }
+
+  // === Step 12: height-scale calibration ===
+  // A phone solve has no pxPerM — without this, analyzeSwing silently uses
+  // the old laptop-chair number at the phone's depth (a wrong constant
+  // wearing a right-looking label). Hold the 36-in bat vertically at the
+  // plate, tap top then bottom: pxPerM = batPx / 0.9144.
+  var BAT_M = 0.9144; // 36 in exactly
+
+  function startHeightMode() {
+    if (!hasSolvedProfile || !profile) {
+      setStatus("Solve the tap calibration first.");
+      return;
+    }
+    var cal = null;
+    try { cal = window.SessionApp && window.SessionApp.phoneCalibration; } catch (e) {}
+    if (!cal || !cal.H) {
+      setStatus("Solve the tap calibration first.");
+      return;
+    }
+    stopTapMode();
+    stopVerifyMode();
+    var v = videoEl();
+    if (!v || !v.videoWidth) {
+      setStatus("No live phone feed — pair the phone first.");
+      return;
+    }
+    heightActive = true;
+    heightTaps = [];
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.addEventListener("click", onHeightClick);
+      wrap.style.cursor = "crosshair";
+    }
+    setStatus("Hold the 36-in bat VERTICALLY at the plate, plumb. Tap the TOP of the bat.");
+  }
+
+  function onHeightClick(ev) {
+    if (!heightActive) return;
+    var p = videoPos(ev);
+    if (!p) return;
+    heightTaps.push(p);
+    if (heightTaps.length === 1) {
+      setStatus("Top tapped at (" + p.u + ", " + p.v + "). Now tap the BOTTOM of the bat.");
+    } else {
+      var top = heightTaps[0], bot = heightTaps[1];
+      var batPx = Math.hypot(top.u - bot.u, top.v - bot.v);
+      var pxPerM = batPx / BAT_M;
+      var midU = Math.round((top.u + bot.u) / 2), midV = Math.round((top.v + bot.v) / 2);
+      lastHeightScale = {
+        pxPerM: pxPerM,
+        measuredAt: { u: midU, v: midV },
+        samples: 1,
+        method: "36-in bat vertical at plate"
+      };
+      if (profile && typeof profile === "object") profile.heightScale = lastHeightScale;
+      try {
+        if (window.SessionApp && window.SessionApp.phoneCalibration) {
+          window.SessionApp.phoneCalibration.heightScalePxPerM = pxPerM;
+        }
+      } catch (e) {}
+      setStatus("Height scale: " + Math.round(pxPerM) + " px/m from the bat. Saved with the profile — tap Height again any time to redo it.");
+      stopHeightMode();
+    }
+  }
+
+  function stopHeightMode() {
+    heightActive = false;
+    heightTaps = [];
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.removeEventListener("click", onHeightClick);
+      if (!verifyActive && !active) wrap.style.cursor = "";
+    }
+  }
+
+  // === Step 1: ball-on-ground verification ===
+  // Proves the homography end-to-end: a ball ON THE GROUND at a known
+  // spot, tapped in the video, mapped through H, error read in inches.
+  // A ball on a tee is invalid — height causes parallax error.
+  var FT_PER_M_LOCAL = 3.28084, IN_PER_FT = 12;
+
+  // Local applyH fallback (same math as session.js) for when
+  // CageCalibration.applyH is unavailable.
+  function applyHLocal(H, u, v) {
+    var w = H[2][0]*u + H[2][1]*v + H[2][2];
+    if (!isFinite(w) || Math.abs(w) < 1e-12) return null;
+    return [
+      (H[0][0]*u + H[0][1]*v + H[0][2]) / w,
+      (H[1][0]*u + H[1][1]*v + H[1][2]) / w
+    ];
+  }
+
+  function startVerifyMode() {
+    var cal = null;
+    try { cal = window.SessionApp && window.SessionApp.phoneCalibration; } catch (e) {}
+    if (!cal || !cal.H) {
+      setStatus("Solve/apply a calibration first.");
+      return;
+    }
+    stopTapMode();
+    stopHeightMode();
+    var v = videoEl();
+    if (!v || !v.videoWidth) {
+      setStatus("No live phone feed — pair the phone first.");
+      return;
+    }
+    verifyActive = true;
+    verifyTap = null;
+    clearVerifyBox();
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.addEventListener("click", onVerifyClick);
+      wrap.style.cursor = "crosshair";
+    }
+    setStatus("Put a ball ON THE GROUND at a known spot (NOT on a tee — height causes parallax error). Tap the ball in the video.");
+  }
+
+  function onVerifyClick(ev) {
+    if (!verifyActive) return;
+    var p = videoPos(ev);
+    if (!p) return;
+    verifyTap = p;
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.removeEventListener("click", onVerifyClick);
+      wrap.style.cursor = "";
+    }
+    showVerifyBox(p);
+    setStatus("Ball tapped at (" + p.u + ", " + p.v + "). Enter the ball's true ground position, then Check.");
+  }
+
+  function showVerifyBox(p) {
+    clearVerifyBox();
+    var box = document.createElement("div");
+    box.id = "calib-verify-box";
+    box.innerHTML =
+      '<label>Known X (ft) <input id="calib-verify-x" type="number" step="0.1" value="3"></label>' +
+      '<label>Known Y (ft) <input id="calib-verify-y" type="number" step="0.1" value="3"></label>' +
+      '<button id="calib-verify-check" class="btn primary">Check</button>' +
+      '<button id="calib-verify-retap" class="btn ghost">Re-tap</button>' +
+      '<div id="calib-verify-result" class="hint"></div>';
+    var st = $("calib-status");
+    if (st && st.parentNode) st.parentNode.insertBefore(box, st.nextSibling);
+    else if ($("calib-panel")) $("calib-panel").appendChild(box);
+    $("calib-verify-check").onclick = function () { runVerifyCheck(p); };
+    $("calib-verify-retap").onclick = function () {
+      clearVerifyBox();
+      verifyActive = true;
+      var wrap = $("camera-wrap");
+      if (wrap) {
+        wrap.addEventListener("click", onVerifyClick);
+        wrap.style.cursor = "crosshair";
+      }
+      setStatus("Tap the ball in the video.");
+    };
+  }
+
+  function clearVerifyBox() {
+    var box = $("calib-verify-box");
+    if (box && box.parentNode) box.parentNode.removeChild(box);
+  }
+
+  function runVerifyCheck(p) {
+    var kx = parseFloat($("calib-verify-x").value);
+    var ky = parseFloat($("calib-verify-y").value);
+    var res = $("calib-verify-result");
+    if (!isFinite(kx) || !isFinite(ky)) {
+      res.textContent = "Enter the ball's known X and Y in feet.";
+      return;
+    }
+    var H = null;
+    try { H = window.SessionApp.phoneCalibration.H; } catch (e) {}
+    if (!H) { res.textContent = "No calibration — solve first."; return; }
+    var g = null;
+    try {
+      if (typeof CageCalibration !== "undefined" && CageCalibration.applyH) {
+        g = CageCalibration.applyH(H, p.u, p.v);
+      } else {
+        g = applyHLocal(H, p.u, p.v);
+      }
+    } catch (e) { g = null; }
+    if (!g || !isFinite(g[0]) || !isFinite(g[1])) {
+      res.textContent = "Insufficient evidence: homography mapping failed at that pixel — re-tap or recalibrate.";
+      return;
+    }
+    var mx = g[0] * FT_PER_M_LOCAL, my = g[1] * FT_PER_M_LOCAL;
+    var errorIn = Math.hypot(mx - kx, my - ky) * IN_PER_FT;
+    var passed = errorIn <= 6;
+    res.textContent = (passed ? "✓ PASS" : "✗ FAIL") +
+      " — ball at (" + kx + ", " + ky + ") ft, measured (" +
+      mx.toFixed(2) + ", " + my.toFixed(2) + ") ft, error " +
+      errorIn.toFixed(1) + " in (bar 6 in)." +
+      (passed ? "" : " Re-tap or recalibrate.");
+    try {
+      var ver = {
+        knownFt: { x: kx, y: ky },
+        measuredFt: { x: +mx.toFixed(3), y: +my.toFixed(3) },
+        errorIn: +errorIn.toFixed(2),
+        passed: passed,
+        at: new Date().toISOString()
+      };
+      if (profile && typeof profile === "object") profile.verification = ver;
+      window.SessionApp.phoneCalibration.verified = passed;
+    } catch (e) {}
+  }
+
+  function stopVerifyMode() {
+    verifyActive = false;
+    verifyTap = null;
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.removeEventListener("click", onVerifyClick);
+      if (!heightActive && !active) wrap.style.cursor = "";
+    }
+    clearVerifyBox();
   }
 
   // Public API
@@ -580,7 +813,28 @@
     };
     window.SessionApp.manualCalibration = window.SessionApp.manualCalibration || null; // manual slot untouched
     var dx = Math.round(nx - ox), dy = Math.round(ny - oy);
-    setStatus("Auto-adjusted ✓ " + found.length + "/" + total + " points, shift (" + dx + ", " + dy + ")px, scale " + medScale.toFixed(2) + "x, mean error " + res.meanPx.toFixed(1) + "px. Numbers live — tap Apply or re-tap manually if this looks off.");
+    // Step 12: carry the bat-measured height scale — features grew by
+    // medScale, so px-per-meter grows by the same factor.
+    var hsNote = "";
+    try {
+      var hsSrc = (prof.heightScale && isFinite(prof.heightScale.pxPerM)) ? prof.heightScale
+        : ((lastHeightScale && isFinite(lastHeightScale.pxPerM)) ? lastHeightScale : null);
+      if (hsSrc) {
+        var newPxPerM = hsSrc.pxPerM * medScale;
+        lastHeightScale = {
+          pxPerM: newPxPerM,
+          measuredAt: hsSrc.measuredAt || null,
+          samples: 1,
+          method: (hsSrc.method || "bat") + " (scaled " + medScale.toFixed(2) + "x by auto-adjust)"
+        };
+        prof.heightScale = lastHeightScale;
+        if (window.SessionApp && window.SessionApp.phoneCalibration) {
+          window.SessionApp.phoneCalibration.heightScalePxPerM = newPxPerM;
+        }
+        hsNote = ", height scale " + Math.round(newPxPerM) + " px/m";
+      }
+    } catch (e) {}
+    setStatus("Auto-adjusted ✓ " + found.length + "/" + total + " points, shift (" + dx + ", " + dy + ")px, scale " + medScale.toFixed(2) + "x, mean error " + res.meanPx.toFixed(1) + "px" + hsNote + ". Numbers live — tap Apply or re-tap manually if this looks off.");
     var ab2 = $("calib-apply");
     if (ab2) ab2.disabled = false;
   }
@@ -655,6 +909,7 @@
   // Wire panel buttons once the DOM is ready.
   function wire() {
     var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file");
+    var hh = $("calib-height"), vb = $("calib-verify");
     if (s) s.onclick = solve;
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;
@@ -662,6 +917,8 @@
     if (ul) ul.onclick = useLastPosition;
     if (au) au.onclick = autoAdjust;
     if (tc) tc.onclick = testCapture;
+    if (hh) hh.onclick = startHeightMode;
+    if (vb) vb.onclick = startVerifyMode;
     if (lf) lf.onchange = function () {
       if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
       lf.value = "";

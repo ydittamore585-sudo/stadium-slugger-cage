@@ -99,6 +99,11 @@ function closePanel() {
   if (rsb) rsb.classList.add("hidden");
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
+  clearWatchMonitors();
+  watchGapReported = false;
+  watchRepairFn = null;
+  hideStreamLostBanner();
+  hideCastDeadBanner();
   el("cast-panel").classList.add("hidden");
   mode = null;
 }
@@ -130,6 +135,164 @@ function switchCamera() {
   }).catch(function (err) {
     setStatus("Couldn't switch camera (" + (err && err.message ? err.message : err) + ") — still on the " + (facingMode === "environment" ? "rear" : "front") + " camera.");
   });
+}
+
+/* ---------------- Step 9: Android tab lifecycle ----------------
+   Chrome on Android kills backgrounded tabs; the wake lock dies with the
+   tab and the camera track can be ended by the OS with no warning. Both
+   sides now say what happened instead of freezing silently. */
+
+var wakeLock = null, visListenerInstalled = false;   // phone side
+var watchRepairFn = null;                            // laptop: re-pair (set in watchPinFlow)
+var watchMuteTimer = null, iceMonitorTimer = null, iceDiscSince = 0;
+var watchGapReported = false;
+
+function requestWakeLock() {
+  if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+  try {
+    navigator.wakeLock.request("screen").then(function (wl) {
+      wakeLock = wl;
+      try {
+        wl.addEventListener("release", function () { wakeLock = null; });
+      } catch (e) {}
+    }).catch(function () { wakeLock = null; });
+  } catch (e) {}
+}
+
+// Registered once (startBroadcastPairing recurses on reconnect — the flag
+// keeps the listener from doubling up).
+function installVisListener() {
+  if (visListenerInstalled) return;
+  visListenerInstalled = true;
+  document.addEventListener("visibilitychange", function () {
+    if (mode !== "broadcast") return;
+    if (document.hidden) {
+      setStatus("Tab hidden — stream will freeze. Keep this tab open.");
+    } else {
+      requestWakeLock(); // wake locks do not survive the hidden state
+      var dead = false;
+      try {
+        if (localStream) {
+          var trs = localStream.getVideoTracks();
+          for (var i = 0; i < trs.length; i++) {
+            if (trs[i].readyState === "ended") { dead = true; break; }
+          }
+        }
+      } catch (e) {}
+      if (dead) showCastDeadBanner(); else hideCastDeadBanner();
+    }
+  });
+}
+
+function showCastDeadBanner() {
+  var b = el("cast-dead-banner");
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "cast-dead-banner";
+    b.textContent = "Camera was killed by the OS. Tap Broadcast again to restart.";
+    var p = el("cast-panel");
+    if (p) p.insertBefore(b, p.firstChild);
+  }
+}
+
+function hideCastDeadBanner() {
+  var b = el("cast-dead-banner");
+  if (b && b.parentNode) b.parentNode.removeChild(b);
+}
+
+function clearWatchMonitors() {
+  if (watchMuteTimer) { clearTimeout(watchMuteTimer); watchMuteTimer = null; }
+  if (iceMonitorTimer) { clearInterval(iceMonitorTimer); iceMonitorTimer = null; }
+  iceDiscSince = 0;
+}
+
+function showStreamLostBanner() {
+  var wrap = el("camera-wrap");
+  var b = el("stream-lost-banner");
+  if (!b && wrap) {
+    b = document.createElement("div");
+    b.id = "stream-lost-banner";
+    var t = document.createElement("div");
+    t.textContent = "📵 PHONE STREAM LOST — check the phone tab";
+    var btn = document.createElement("button");
+    btn.id = "stream-lost-repair";
+    btn.textContent = "Re-pair";
+    btn.addEventListener("click", function () {
+      if (watchRepairFn) watchRepairFn();
+      else watchPinFlow();
+    });
+    b.appendChild(t);
+    b.appendChild(btn);
+    wrap.appendChild(b);
+  }
+  if (b) b.classList.remove("hidden");
+}
+
+function hideStreamLostBanner() {
+  var b = el("stream-lost-banner");
+  if (b) b.classList.add("hidden");
+}
+
+// Gap bookkeeping crosses into session.js (streamMuted/streamLive) so the
+// swing log records exactly when the feed was dead.
+function noteStreamLost() {
+  showStreamLostBanner();
+  if (!watchGapReported) {
+    watchGapReported = true;
+    try {
+      if (window.SessionApp && window.SessionApp.streamMuted) window.SessionApp.streamMuted();
+    } catch (e) {}
+  }
+}
+
+function noteStreamRecovered() {
+  hideStreamLostBanner();
+  if (watchGapReported) {
+    watchGapReported = false;
+    try {
+      if (window.SessionApp && window.SessionApp.streamLive) window.SessionApp.streamLive();
+    } catch (e) {}
+  }
+}
+
+// Shared by the PIN and manual watch flows: watches one inbound track for
+// the two death signals (track mute, ICE disconnect) and offers re-pair.
+function monitorWatchTrack(pcRef, track) {
+  clearWatchMonitors();
+  noteStreamRecovered(); // a new track closes any dangling gap from the old one
+  track.onmute = function () {
+    if (watchMuteTimer) clearTimeout(watchMuteTimer);
+    watchMuteTimer = setTimeout(function () {
+      watchMuteTimer = null;
+      var stillGone = true;
+      try { stillGone = track.muted || track.readyState !== "live"; } catch (e) {}
+      if (stillGone) noteStreamLost();
+    }, 5000);
+  };
+  track.onunmute = function () {
+    if (watchMuteTimer) { clearTimeout(watchMuteTimer); watchMuteTimer = null; }
+    noteStreamRecovered();
+  };
+  // Backstop: some Android skins kill the tab without firing mute first.
+  iceDiscSince = 0;
+  iceMonitorTimer = setInterval(function () {
+    if (pcRef !== pc) { // replaced by a newer connection — retire
+      clearWatchMonitors();
+      return;
+    }
+    var st = "";
+    try { st = pcRef.connectionState; } catch (e) {}
+    if (st === "disconnected") {
+      if (!iceDiscSince) iceDiscSince = Date.now();
+      if (Date.now() - iceDiscSince > 5000) {
+        iceDiscSince = 0;
+        noteStreamLost();
+      }
+    } else {
+      iceDiscSince = 0;
+      if (st === "connected") noteStreamRecovered();
+    }
+  }, 1000);
 }
 
 /* ---------------- PIN pairing ---------------- */
@@ -304,10 +467,9 @@ function startBroadcastPairing(pin) {
   }).then(function (stream) {
     localStream = stream;
     showSwitchCam(true);
-    // Wake lock so the phone doesn't sleep mid-session.
-    try {
-      if (navigator.wakeLock) navigator.wakeLock.request("screen");
-    } catch (e) {}
+    requestWakeLock();
+    installVisListener(); // once: warns on tab-hide, re-locks on visible
+    hideCastDeadBanner(); // a fresh broadcast clears the OS-kill warning
     setStatus("Creating broadcast offer…");
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
@@ -451,6 +613,22 @@ function watchPinFlow() {
     }
   }, 30000);
 
+  // Step 9: re-pair without a page refresh — tear down and rejoin the same
+  // topic. Wired to the "Re-pair" button on the stream-lost banner.
+  // (Do NOT close the session.js gap here: the new track's
+  // monitorWatchTrack closes it via streamLive, so the gap stays honest.)
+  watchRepairFn = function () {
+    connected = false; gotOffer = false;
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    stopPairing();
+    clearWatchMonitors();
+    hideStreamLostBanner();
+    setStatus("Re-pairing — listening for the phone…");
+    el("cast-pin-show").classList.remove("hidden");
+    el("cast-pin-hint").textContent = "Waiting for the phone — this code doesn't change.";
+    connect();
+  };
+
   function applyOfferPin(o) {
     if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
     var d;
@@ -488,6 +666,7 @@ function watchPinFlow() {
       if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
         window.SessionApp.onRemoteStream(stream);
       }
+      if (ev.track) monitorWatchTrack(pc, ev.track); // Step 9: stream-death watch
       // NOTE: do NOT set connected=true here. ontrack fires during
       // setRemoteDescription, before our answer is even sent. Marking
       // connected here suppresses the answer (sendAnswer gates on
@@ -749,10 +928,9 @@ function broadcastManualFlow() {
   }).then(function (stream) {
     localStream = stream;
     showSwitchCam(true);
-    // Wake lock so the phone doesn't sleep mid-session.
-    try {
-      if (navigator.wakeLock) navigator.wakeLock.request("screen");
-    } catch (e) {}
+    requestWakeLock();
+    installVisListener(); // once: warns on tab-hide, re-locks on visible
+    hideCastDeadBanner(); // a fresh broadcast clears the OS-kill warning
     setStatus("Creating broadcast offer…");
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
@@ -814,6 +992,7 @@ function watchManualFlow() {
       if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
         window.SessionApp.onRemoteStream(stream);
       }
+      if (ev.track) monitorWatchTrack(pc, ev.track); // Step 9: stream-death watch
       setStatus("✓ Phone camera connected — start the session below.");
       el("cast-qr").innerHTML = "";
       el("cast-actions").innerHTML = "";

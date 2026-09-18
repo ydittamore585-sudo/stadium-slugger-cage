@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>Cage Session — Stadium Slugger</title>
-<link rel="stylesheet" href="styles.css?v=20260918b">
+<link rel="stylesheet" href="styles.css?v=20260918c">
 </head>
 <body>
 <div id="app">
@@ -79,6 +79,8 @@
       <button id="calib-save" class="btn" disabled>Save profile</button>
       <button id="calib-auto" class="btn" title="Re-find saved reference points in the current frame and re-solve automatically">✨ Auto-adjust</button>
       <button id="calib-test-capture" class="btn" title="Prove the laptop can grab pixels from the phone feed">📸 Test capture</button>
+      <button id="calib-height" class="btn" title="Measure height scale: hold the 36-in bat vertically at the plate, tap top then bottom">📏 Height</button>
+      <button id="calib-verify" class="btn" title="Verify the calibration: ball on the ground at a known spot, tap it">⚾ Verify ball</button>
       <button id="calib-use-last" class="btn" title="Use the 2026-09-17 validated chair-position calibration (approximate)">📍 Use last position</button>
       <label class="btn ghost" style="cursor:pointer" title="Load a saved calibration profile (with reference patches)">
         📂 Load
@@ -139,8 +141,8 @@
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
-<script src="cast.js?v=20260918b"></script>
-<script src="calib.js?v=20260917i"></script>
-<script src="session.js?v=20260918b"></script>
+<script src="cast.js?v=20260918c"></script>
+<script src="calib.js?v=20260918c"></script>
+<script src="session.js?v=20260918c"></script>
 </body>
 </html>
