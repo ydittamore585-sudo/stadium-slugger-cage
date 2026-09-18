@@ -164,6 +164,7 @@
     setStatus(verdict + " You can Apply anyway, but numbers will be shaky.");
     $("calib-apply").disabled = false;
     $("calib-save").disabled = false;
+    unlockCalibActions();
     try {
       profile = CageCalibration.buildProfile({
         cage: { lengthM: 30 * FT, widthM: 10 * FT },
@@ -237,6 +238,7 @@
         setStatus("Loaded '" + preset.label + "' — APPROXIMATE (phone within inches of that spot, not exact). Treat numbers as estimates. For best accuracy, do the 6-tap calibration.");
         $("calib-apply").disabled = false;
         $("calib-save").disabled = false;
+        unlockCalibActions();
       })
       .catch(function (e) {
         setStatus("Couldn't load last position: " + (e && e.message ? e.message : e));
@@ -320,13 +322,11 @@
   var BAT_M = 0.9144; // 36 in exactly
 
   function startHeightMode() {
-    if (!hasSolvedProfile || !profile) {
-      setStatus("Solve the tap calibration first.");
-      return;
-    }
     var cal = null;
     try { cal = window.SessionApp && window.SessionApp.phoneCalibration; } catch (e) {}
-    if (!cal || !cal.H) {
+    // Needs a calibration with a homography — a fresh solve or a loaded
+    // preset both qualify. (The bat measurement itself is fresh pixels.)
+    if (!profile || !cal || !cal.H) {
       setStatus("Solve the tap calibration first.");
       return;
     }
@@ -911,6 +911,15 @@
     rd.readAsText(file);
   }
 
+  // Height / Verify ball are only meaningful once a calibration (fresh
+  // solve or loaded preset) exists. They start disabled so they never
+  // look clickable and then "do nothing".
+  function unlockCalibActions() {
+    var hh = $("calib-height"), vb = $("calib-verify");
+    if (hh) hh.disabled = false;
+    if (vb) vb.disabled = false;
+  }
+
   // Wire panel buttons once the DOM is ready.
   function wire() {
     var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file");
@@ -922,8 +931,8 @@
     if (ul) ul.onclick = useLastPosition;
     if (au) au.onclick = autoAdjust;
     if (tc) tc.onclick = testCapture;
-    if (hh) hh.onclick = startHeightMode;
-    if (vb) vb.onclick = startVerifyMode;
+    if (hh) { hh.onclick = startHeightMode; hh.disabled = true; }
+    if (vb) { vb.onclick = startVerifyMode; vb.disabled = true; }
     if (lf) lf.onchange = function () {
       if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
       lf.value = "";

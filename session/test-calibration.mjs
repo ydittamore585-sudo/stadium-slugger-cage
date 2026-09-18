@@ -78,5 +78,17 @@ const PIX = WORLD.map(([x, y]) => applyH33(Htrue, x, y).map(Math.round));
      "calib.js does not prepend 'Insufficient evidence:' to res.reason");
 }
 
+// 5. Height / Verify ball start disabled and unlock only when a
+//    calibration exists (fresh solve or loaded preset) — they must never
+//    look clickable and then "do nothing".
+{
+  ok(/hh\.disabled\s*=\s*true/.test(calibSrc), "wire() starts Height disabled");
+  ok(/vb\.disabled\s*=\s*true/.test(calibSrc), "wire() starts Verify ball disabled");
+  const unlockCalls = (calibSrc.match(/unlockCalibActions\(\);/g) || []).length;
+  ok(unlockCalls >= 2, "unlockCalibActions() runs on solve success and preset load (" + unlockCalls + " calls)");
+  ok(/function startHeightMode\(\) \{\s*\n\s*var cal = null;/.test(calibSrc),
+     "Height's guard is H-based (a loaded preset qualifies, not just a fresh solve)");
+}
+
 console.log(passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);
