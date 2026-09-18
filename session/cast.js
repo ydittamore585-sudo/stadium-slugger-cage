@@ -41,6 +41,11 @@ var CAST_BUILD = (function () {
 var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
 var link = null, republishTimer = null, pairTimeout = null, pairRetryTimer = null;
+// Pairing-run generation: every phone offer cycle bumps broadcastEpoch, and
+// stale closures (a dead run's link onMessage, timers, promise chains) bail
+// instead of touching the current peer connection. broadcastActive goes
+// false when the panel closes so delayed restarts can't resurrect a session.
+var broadcastEpoch = 0, broadcastActive = false;
 var healthTimer = null;
 var manualStarted = false;
 
@@ -72,6 +77,8 @@ function setStatus(msg) {
 }
 
 function showPanel(which) {
+  broadcastActive = false;
+  broadcastEpoch++; // a fresh panel means fresh pairing runs
   mode = which;
   el("cast-panel").classList.remove("hidden");
   el("cast-status").textContent = "";
@@ -92,6 +99,8 @@ function showPanel(which) {
 }
 
 function closePanel() {
+  broadcastActive = false;
+  broadcastEpoch++; // invalidate any in-flight phone pairing run
   stopScanning();
   stopPairing();
   showSwitchCam(false);
@@ -452,6 +461,7 @@ function broadcastPinFlow() {
     if (pin.length !== 6) { entryStatus.textContent = "That code needs 6 digits."; return; }
     entryStatus.textContent = "";
     storeSet(LAST_PIN_KEY, pin);
+    el("btn-cast-pair").disabled = true; // one pairing run at a time
     el("cast-pin-enter").classList.add("hidden");
     startBroadcastPairing(pin);
   };
@@ -460,99 +470,181 @@ function broadcastPinFlow() {
 }
 
 function startBroadcastPairing(pin) {
+  broadcastActive = true;
   setStatus("Starting phone camera…");
   navigator.mediaDevices.getUserMedia({
     video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
   }).then(function (stream) {
+    if (!broadcastActive) return; // panel was closed while the camera warmed up
     localStream = stream;
     showSwitchCam(true);
     requestWakeLock();
     installVisListener(); // once: warns on tab-hide, re-locks on visible
     hideCastDeadBanner(); // a fresh broadcast clears the OS-kill warning
-    setStatus("Creating broadcast offer…");
-    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
-    pc = new RTCPeerConnection(RTC_CFG);
-    stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
-    startHealthPoll(pc, "out");
-    preferSingleCodec(pc, "video"); // one codec -> smaller offer
-    return pc.createOffer().then(function (offer) {
-      return pc.setLocalDescription(offer);
-    }).then(function () {
-      return waitIceComplete(pc);
-    }).then(function () {
-      var offerMsg = fullSdpMsg("offer", pc.localDescription.sdp);
-      var answered = false;
-      // If the paired connection dies (laptop refreshed, network blip), go
-      // back to broadcasting a fresh offer — the mounted phone must never
-      // strand itself on a dead session.
-      pc.onconnectionstatechange = function () {
-        var st = "";
-        try { st = pc.connectionState; } catch (e) {}
-        if ((st === "failed" || st === "closed") && answered) {
-          answered = false;
-          try { pc.close(); } catch (e2) {}
-          pc = null;
-          setStatus("Connection lost — rebroadcasting…");
-          startBroadcastPairing(pin);
-        }
-      };
-      setStatus("Pairing…");
-      // A blipped connection must not strand the mounted phone: wait a few
-      // seconds and rejoin the same topic. stopPairing() (panel close) clears
-      // pairRetryTimer, so this can't resurrect a closed session.
-      var scheduleReconnect = function (msg) {
-        if (answered) return;
-        stopPairing();
-        setStatus(msg);
-        pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
-      };
-      var quietRejoin = function () {
-        // Paired already: the link is just the command channel (remote
-        // camera switch). Rejoin silently — never touch the status text.
-        if (!answered || pairRetryTimer) return;
-        if (link) { try { link.close(); } catch (e) {} link = null; }
-        pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
-      };
-      var connect = function () {
-        if (link) { try { link.close(); } catch (e) {} link = null; }
-        link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
-          onReady: function () {
-            if (answered) return; // already paired: this link is commands-only
-            setStatus("Broadcasting offer — waiting for the laptop (code " + pin + ")…");
-            var sendOffer = function () { if (!answered && link) link.send(JSON.parse(offerMsg)); };
-            sendOffer();
-            republishTimer = setInterval(sendOffer, 2500); // the laptop may join late
-          },
-          onMessage: function (o) {
-            // Remote command from the laptop — the mounted phone never
-            // needs a touch to flip cameras.
-            if (o && o.t === "switch") { switchCamera(); return; }
-            var d;
-            try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
-            if (d.t !== "answer" || answered) return;
-            answered = true;
-            // Paired: stop the timers but KEEP the link — remote commands
-            // (camera switch) arrive over it.
-            if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
-            if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
-            if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
-            pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
-              setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
-            }).catch(function (err) {
-              var why = err && err.message ? err.message : String(err);
-              try { console.error("broadcast answer failed:", why); } catch (e) {}
-              setStatus("Pairing failed — try again. (" + why + ")");
-            });
-          },
-          onError: function () { if (answered) quietRejoin(); else scheduleReconnect("Pairing service hiccup — retrying…"); },
-          onClose: function () { if (answered) quietRejoin(); else scheduleReconnect("Connection blipped — reconnecting…"); }
-        });
-      };
-      connect();
-    });
+    broadcastOfferCycle(pin);
   }).catch(function () {
     setStatus("Phone camera blocked — allow access and retry.");
+    var pb = el("btn-cast-pair");
+    if (pb) pb.disabled = false;
+    el("cast-pin-enter").classList.remove("hidden");
+  });
+}
+
+// One phone offer cycle: a fresh peer connection + offer, published until
+// the laptop answers. Re-runs on connection failure (reusing the camera
+// stream — no re-prompt), on handshake stalls, and on repeated answer
+// failures. The mounted phone never strands itself on a dead session.
+function broadcastOfferCycle(pin, quiet) {
+  var epoch = ++broadcastEpoch; // this cycle owns the pairing state from here on
+  stopPairing(); // drop the previous cycle's timers/link (epoch NOT bumped here)
+  if (!quiet) setStatus("Creating broadcast offer…");
+  if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  var myPc = pc = new RTCPeerConnection(RTC_CFG);
+  var tracksOk = false;
+  try {
+    var trs = localStream ? localStream.getVideoTracks() : [];
+    tracksOk = trs.length > 0 && trs[0].readyState === "live";
+    if (tracksOk) trs.forEach(function (t) { myPc.addTrack(t, localStream); });
+  } catch (e) { tracksOk = false; }
+  if (!tracksOk) {
+    // The OS killed the camera while we weren't looking — re-request it
+    // instead of offering a dead track.
+    if (epoch === broadcastEpoch && broadcastActive) {
+      setStatus("Camera track lost — restarting camera…");
+      setTimeout(function () { if (broadcastActive) startBroadcastPairing(pin); }, 1500);
+    }
+    return;
+  }
+  startHealthPoll(myPc, "out");
+  preferSingleCodec(myPc, "video"); // one codec -> smaller offer
+  var answered = false;
+  var answerAttempts = 0;
+  var stallTimer = null;
+
+  // Applying the laptop's answer is the step that used to die with
+  // "Called in wrong state: stable" and strand the phone on a dead
+  // "Pairing failed — try again." with no way back. Every one of those
+  // failure modes now retries instead of stranding:
+  //   - answer arrives when already stable -> duplicate, ignore silently
+  //   - apply fails -> the laptop republishes its answer every 2.5s, so the
+  //     next copy retries automatically (attempts shown in the status)
+  //   - 3 failed attempts -> mint a fresh offer; the laptop treats a new
+  //     offer SDP as a re-pair request and re-handshakes on its own
+  var applyPhoneAnswer = function (sdp) {
+    if (epoch !== broadcastEpoch || myPc !== pc) return; // superseded
+    var sig = "";
+    try { sig = myPc.signalingState; } catch (e) {}
+    if (sig === "stable") return; // duplicate/late answer — handshake already done
+    if (sig !== "have-local-offer") return; // mid-restart; a fresh offer is coming
+    if (answered) return; // an apply is already in flight
+    answered = true;
+    myPc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: sdp })).then(function () {
+      if (epoch !== broadcastEpoch || myPc !== pc) return;
+      answerAttempts = 0;
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+      // Paired: stop the timers but KEEP the link — remote commands
+      // (camera switch) arrive over it.
+      if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
+      if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+      if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
+      setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
+    }).catch(function (err) {
+      if (epoch !== broadcastEpoch || myPc !== pc) return;
+      answered = false; // let the next republished answer retry
+      answerAttempts++;
+      var why = err && err.message ? err.message : String(err);
+      try { console.error("broadcast answer failed (attempt " + answerAttempts + "):", why); } catch (e) {}
+      if (answerAttempts >= 3) {
+        answerAttempts = 0;
+        setStatus("Handshake keeps failing — starting a fresh offer…");
+        setTimeout(function () { if (epoch === broadcastEpoch && broadcastActive) broadcastOfferCycle(pin, true); }, 1500);
+      } else {
+        setStatus("Handshake hiccup — retrying (attempt " + answerAttempts + ")…");
+      }
+    });
+  };
+
+  myPc.createOffer().then(function (offer) {
+    if (epoch !== broadcastEpoch) throw new Error("superseded");
+    return myPc.setLocalDescription(offer);
+  }).then(function () {
+    return waitIceComplete(myPc);
+  }).then(function () {
+    if (epoch !== broadcastEpoch || myPc !== pc) return;
+    var offerMsg = fullSdpMsg("offer", myPc.localDescription.sdp);
+    // If the paired connection dies (laptop refreshed, network blip), go
+    // back to broadcasting a fresh offer. The epoch bump invalidates this
+    // cycle immediately so a stale answer can't land on the closed pc; the
+    // short delay damps flapping.
+    myPc.onconnectionstatechange = function () {
+      var st = "";
+      try { st = myPc.connectionState; } catch (e) {}
+      if ((st === "failed" || st === "closed") && epoch === broadcastEpoch && myPc === pc) {
+        broadcastEpoch++;
+        setStatus("Connection lost — rebroadcasting…");
+        setTimeout(function () { if (broadcastActive) broadcastOfferCycle(pin, true); }, 3000);
+      }
+    };
+    if (!quiet) setStatus("Pairing…");
+    // A blipped connection must not strand the mounted phone: wait a few
+    // seconds and rejoin the same topic. stopPairing() (panel close) clears
+    // pairRetryTimer, so this can't resurrect a closed session.
+    var scheduleReconnect = function (msg) {
+      if (answered || epoch !== broadcastEpoch) return;
+      stopPairing();
+      setStatus(msg);
+      pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+    };
+    var quietRejoin = function () {
+      // Paired already: the link is just the command channel (remote
+      // camera switch). Rejoin silently — never touch the status text.
+      if (!answered || pairRetryTimer || epoch !== broadcastEpoch) return;
+      if (link) { try { link.close(); } catch (e) {} link = null; }
+      pairRetryTimer = setTimeout(function () { pairRetryTimer = null; connect(); }, 8000);
+    };
+    var connect = function () {
+      if (epoch !== broadcastEpoch || myPc !== pc || !broadcastActive) return;
+      if (link) { try { link.close(); } catch (e) {} link = null; }
+      link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
+        onReady: function () {
+          if (answered || epoch !== broadcastEpoch) return; // already paired: commands-only
+          setStatus("Broadcasting offer — waiting for the laptop (code " + pin + ")…");
+          var sendOffer = function () { if (!answered && link && epoch === broadcastEpoch) link.send(JSON.parse(offerMsg)); };
+          sendOffer();
+          republishTimer = setInterval(sendOffer, 2500); // the laptop may join late
+        },
+        onMessage: function (o) {
+          if (epoch !== broadcastEpoch) return;
+          // Remote command from the laptop — the mounted phone never
+          // needs a touch to flip cameras.
+          if (o && o.t === "switch") { switchCamera(); return; }
+          var d;
+          try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
+          if (d.t !== "answer") return;
+          applyPhoneAnswer(d.sdp);
+        },
+        onError: function () { if (answered) quietRejoin(); else scheduleReconnect("Pairing service hiccup — retrying…"); },
+        onClose: function () { if (answered) quietRejoin(); else scheduleReconnect("Connection blipped — reconnecting…"); }
+      });
+    };
+    connect();
+    // Stall guard: if no answer lands within 45s, whatever the laptop saw
+    // is stale — mint a fresh offer. The laptop treats a new offer SDP as a
+    // re-pair request and re-handshakes automatically.
+    stallTimer = setTimeout(function () {
+      stallTimer = null;
+      if (epoch !== broadcastEpoch || answered || !broadcastActive) return;
+      setStatus("No answer from the laptop — refreshing the offer…");
+      broadcastOfferCycle(pin, true);
+    }, 45000);
+  }).catch(function (err) {
+    if (epoch !== broadcastEpoch) return;
+    var why = (err && err.message) || String(err);
+    if (why === "superseded") return;
+    try { console.error("broadcast offer failed:", why); } catch (e) {}
+    setStatus("Couldn't create the offer (" + why + ") — retrying…");
+    setTimeout(function () { if (epoch === broadcastEpoch && broadcastActive) broadcastOfferCycle(pin, true); }, 3000);
   });
 }
 
@@ -571,7 +663,7 @@ function watchPinFlow() {
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     watchPinFlow();
   };
-  var gotOffer = false, connected = false;
+  var gotOffer = false, connected = false, lastOfferSdp = "";
   var quietRejoin = function () {
     // Command channel dropped after pairing: rejoin silently so remote
     // commands (camera switch) keep working. Never touches the status text.
@@ -586,7 +678,16 @@ function watchPinFlow() {
         if (!connected) link.send({ t: "hello" }); // nudge a phone that's already waiting
       },
       onMessage: function (o) {
-        if (o.t === "offer" && !gotOffer) { gotOffer = true; applyOfferPin(o); }
+        // Offers republish every 2.5s, so dedupe by SDP: an identical SDP is
+        // a republish (ignore it), a NEW SDP is the phone re-pairing after a
+        // blip (re-handshake even if we thought we were already paired).
+        if (!o || o.t !== "offer") return;
+        var sdp = "";
+        try { sdp = decodeMsg(JSON.stringify(o)).sdp || ""; } catch (e) { return; }
+        if (sdp === lastOfferSdp) return;
+        lastOfferSdp = sdp;
+        gotOffer = true;
+        applyOfferPin(o);
       },
       onError: function () {
         if (connected) { quietRejoin(); return; }
@@ -618,7 +719,7 @@ function watchPinFlow() {
   // (Do NOT close the session.js gap here: the new track's
   // monitorWatchTrack closes it via streamLive, so the gap stays honest.)
   watchRepairFn = function () {
-    connected = false; gotOffer = false;
+    connected = false; gotOffer = false; lastOfferSdp = "";
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     stopPairing();
     clearWatchMonitors();
@@ -646,21 +747,6 @@ function watchPinFlow() {
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     startHealthPoll(pc, "in");
-    // Dead-session recovery: if the phone goes away (refresh, tab killed),
-    // drop this peer connection and rejoin the topic — the phone's next
-    // broadcast re-pairs automatically instead of stranding on "connected".
-    pc.onconnectionstatechange = function () {
-      var st = "";
-      try { st = pc.connectionState; } catch (e) {}
-      if (st === "failed" || st === "closed") {
-        connected = false; gotOffer = false;
-        try { pc.close(); } catch (e2) {}
-        pc = null;
-        stopPairing();
-        setStatus("Phone went away — listening for its broadcast…");
-        connect();
-      }
-    };
     pc.ontrack = function (ev) {
       var stream = ev.streams && ev.streams[0];
       if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
@@ -724,6 +810,7 @@ function watchPinFlow() {
             // phone's next offer republish. Same code, no user action.
             setStatus("Handshake stalled — retrying on the same code…");
             gotOffer = false;
+            lastOfferSdp = "";
             if (pc) { try { pc.close(); } catch (e) {} pc = null; }
             stopPairing();
             connect();
@@ -732,6 +819,7 @@ function watchPinFlow() {
       })
       .catch(function (err) {
         gotOffer = false;
+        lastOfferSdp = ""; // the phone's republish must look new so it retries
         if (pc) { try { pc.close(); } catch (e) {} pc = null; }
         var why = err && err.message ? err.message : String(err);
         var mline = "";
@@ -957,6 +1045,14 @@ function broadcastManualFlow() {
     try {
       var o = decodeMsg(text);
       if (o.t !== "answer") throw new Error("not an answer");
+      var sig = "";
+      try { sig = pc.signalingState; } catch (e) {}
+      if (sig === "stable") { // duplicate scan of an already-applied answer
+        setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
+        el("cast-actions").innerHTML = "";
+        el("cast-qr").innerHTML = "";
+        return;
+      }
       pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: o.sdp })).then(function () {
         setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
         el("cast-actions").innerHTML = "";
