@@ -433,18 +433,35 @@ function watchPinFlow() {
       if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
         window.SessionApp.onRemoteStream(stream);
       }
-      connected = true;
-      // Paired: stop the timers but KEEP the signaling link — the
-      // "switch phone camera" command goes out over it.
+      // NOTE: do NOT set connected=true here. ontrack fires during
+      // setRemoteDescription, before our answer is even sent. Marking
+      // connected here suppresses the answer (sendAnswer gates on
+      // !connected) and the phone never completes the handshake.
+      // connected flips only in onconnectionstatechange below.
       if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
       if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
       if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
       el("cast-pin-show").classList.add("hidden");
-      setStatus("✓ Phone camera connected — start the session below.");
+      setStatus("Phone found — completing connection…");
       var rsb = el("btn-switch-cam-remote");
       if (rsb) {
         rsb.classList.remove("hidden");
         rsb.onclick = function () { if (link) link.send({ t: "switch" }); };
+      }
+    };
+    pc.onconnectionstatechange = function () {
+      var st = "";
+      try { st = pc.connectionState; } catch (e) {}
+      if (st === "connected" && !connected) {
+        connected = true;
+        setStatus("✓ Phone camera connected — start the session below.");
+      } else if (st === "failed" || st === "closed") {
+        connected = false; gotOffer = false;
+        try { pc.close(); } catch (e2) {}
+        pc = null;
+        stopPairing();
+        setStatus("Phone went away — listening for its broadcast…");
+        connect();
       }
     };
     pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: d.sdp }))
