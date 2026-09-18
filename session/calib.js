@@ -299,6 +299,7 @@
     save: save,
     autoAdjust: autoAdjust,
     loadProfileFile: loadProfileFile,
+    testCapture: testCapture,
     isActive: function () { return active; },
     getProfile: function () { return profile; },
   };
@@ -584,6 +585,51 @@
     if (ab2) ab2.disabled = false;
   }
 
+  // Diagnostic: prove the laptop can grab pixels from the phone feed.
+  // Shows the 480x270 grayscale frame the matcher uses. If this works,
+  // tap capture and auto-adjust have what they need.
+  function testCapture() {
+    var frame = captureRefFrame();
+    if (!frame) {
+      setStatus("Capture test FAILED: no pixels from the phone feed. Pair the phone first, then try again.");
+      return;
+    }
+    // Render the grayscale frame into a small preview canvas in the panel.
+    var prev = $("calib-capture-preview");
+    if (!prev) {
+      prev = document.createElement("canvas");
+      prev.id = "calib-capture-preview";
+      prev.width = REF_W; prev.height = REF_H;
+      prev.style.cssText = "width:240px;height:135px;border:1px solid #666;margin-top:8px;image-rendering:pixelated;";
+      var st = $("calib-status");
+      if (st && st.parentNode) st.parentNode.insertBefore(prev, st.nextSibling);
+    }
+    var ctx = prev.getContext("2d");
+    var img = ctx.createImageData(REF_W, REF_H);
+    for (var i = 0; i < frame.data.length; i++) {
+      img.data[i * 4] = frame.data[i];
+      img.data[i * 4 + 1] = frame.data[i];
+      img.data[i * 4 + 2] = frame.data[i];
+      img.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    // Quick sanity: measure frame variance (a black/flat frame = broken capture)
+    var mean = 0;
+    for (var j = 0; j < frame.data.length; j++) mean += frame.data[j];
+    mean /= frame.data.length;
+    var vari = 0;
+    for (var k = 0; k < frame.data.length; k++) {
+      var d = frame.data[k] - mean;
+      vari += d * d;
+    }
+    vari = Math.sqrt(vari / frame.data.length);
+    if (vari < 5) {
+      setStatus("Capture test: got pixels, but frame looks flat/black (stddev " + vari.toFixed(1) + ") — is the phone camera covered or the video frozen?");
+    } else {
+      setStatus("Capture test PASSED: 480x270 grayscale, stddev " + vari.toFixed(1) + ". Tap calibration and auto-adjust can read the feed.");
+    }
+  }
+
   function loadProfileFile(file) {
     if (!file) return;
     var rd = new FileReader();
@@ -608,13 +654,14 @@
 
   // Wire panel buttons once the DOM is ready.
   function wire() {
-    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), lf = $("calib-load-file");
+    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file");
     if (s) s.onclick = solve;
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;
     if (c) c.onclick = close;
     if (ul) ul.onclick = useLastPosition;
     if (au) au.onclick = autoAdjust;
+    if (tc) tc.onclick = testCapture;
     if (lf) lf.onchange = function () {
       if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
       lf.value = "";
