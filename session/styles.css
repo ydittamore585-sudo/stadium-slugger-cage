@@ -68,10 +68,24 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
   border-radius: 8px; font-size: 0.7rem; margin-bottom: 8px;
 }
 #cast-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
-#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close {
+#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close, #btn-cast-pair {
   padding: 10px 14px; border-radius: 8px; border: none; cursor: pointer;
   background: #2a5aa0; color: #fff; font-weight: 600;
 }
+#cast-pin-show, #cast-pin-enter { text-align: center; margin: 12px 0; }
+.cast-pin-label { font-weight: 600; margin-bottom: 10px; }
+#cast-pin {
+  font-size: 44px; font-weight: 800; letter-spacing: 12px; text-indent: 12px;
+  background: #0a0e1a; border-radius: 10px; padding: 10px 0; margin: 0 auto 8px; max-width: 340px;
+}
+.cast-dim { opacity: 0.7; font-size: 13px; margin-top: 8px; }
+#cast-pin-input {
+  font-size: 28px; letter-spacing: 8px; text-align: center; width: 200px;
+  padding: 8px; border-radius: 8px; border: 1px solid #2a3350;
+  background: #0a0e1a; color: #fff;
+}
+#cast-manual-details { margin-top: 12px; }
+#cast-manual-details summary { cursor: pointer; opacity: 0.75; font-size: 13px; }
 #btn-cast-close { background: #2a3350; margin-top: 8px; }
 #cast-scan-video { width: 100%; border-radius: 8px; background: #000; }
 #profile-load { display: block; margin-top: 10px; }

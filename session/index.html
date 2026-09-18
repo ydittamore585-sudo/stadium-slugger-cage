@@ -28,20 +28,34 @@
 
   <div id="cast-panel" class="hidden">
     <div id="cast-status"></div>
+    <div id="cast-pin-show" class="hidden">
+      <div class="cast-pin-label">On your phone, open this page,<br>tap “📡 Phone: broadcast camera”, and enter:</div>
+      <div id="cast-pin"></div>
+      <div id="cast-pin-hint" class="cast-dim"></div>
+    </div>
+    <div id="cast-pin-enter" class="hidden">
+      <div class="cast-pin-label">Enter the 6-digit code shown on the laptop:</div>
+      <input id="cast-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="······" autocomplete="off">
+      <button id="btn-cast-pair">Pair</button>
+      <div id="cast-pin-entry-status" class="cast-dim"></div>
+    </div>
     <div id="cast-qr"></div>
     <div id="cast-textwrap" class="hidden">
       <textarea id="cast-text" readonly rows="4"></textarea>
       <button id="btn-copy-code">Copy text</button>
     </div>
-    <div id="cast-scan-wrap" class="hidden">
-      <video id="cast-scan-video" playsinline muted></video>
-      <canvas id="cast-scan-canvas" class="hidden"></canvas>
-    </div>
-    <div id="cast-paste-wrap" class="hidden">
-      <textarea id="cast-paste" rows="4" placeholder="Paste the code from the other device"></textarea>
-      <button id="btn-apply-code">Apply code</button>
-    </div>
-    <div id="cast-actions"></div>
+    <details id="cast-manual-details">
+      <summary>Pair with manual codes (no internet)</summary>
+      <div id="cast-actions"></div>
+      <div id="cast-scan-wrap" class="hidden">
+        <video id="cast-scan-video" playsinline muted></video>
+        <canvas id="cast-scan-canvas" class="hidden"></canvas>
+      </div>
+      <div id="cast-paste-wrap" class="hidden">
+        <textarea id="cast-paste" rows="4" placeholder="Paste the code from the other device"></textarea>
+        <button id="btn-apply-code">Apply code</button>
+      </div>
+    </details>
     <button id="btn-cast-close">Close</button>
   </div>
 
@@ -77,7 +91,8 @@
 <script src="vendor/qrcode.min.js?v=20260917c"></script>
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
-<script src="cast.js?v=20260917c"></script>
+<script src="mqtt.js?v=20260917d"></script>
+<script src="cast.js?v=20260917d"></script>
 <script src="session.js?v=20260917c"></script>
 </body>
 </html>

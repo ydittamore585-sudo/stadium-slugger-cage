@@ -3,9 +3,12 @@
  *
  * Pure static-page WebRTC. No signaling server: the offer/answer are
  * exchanged as QR codes (camera scan) with copy/paste text fallback.
- * Non-trickle ICE, host candidates only (same-WiFi LAN). The SDP is
- * minified (one codec, no filler lines) and LZ-compressed so each side
- * is a single easily-scannable QR code.
+ * Pairing (primary): the laptop shows a 6-digit code, the phone types it in.
+ * Offer/answer are relayed through a lightweight public MQTT broker over
+ * WebSocket — the broker only sees the SDP handshake; the camera media
+ * stays peer-to-peer on the LAN, encrypted with DTLS-SRTP.
+ * Manual QR / copy-paste codes remain as an offline fallback.
+ * Non-trickle ICE, host candidates only (same-WiFi LAN).
  *
  * Roles:
  *   Broadcast (phone):  camera -> RTCPeerConnection -> laptop
@@ -19,6 +22,12 @@ var scanVideo = null, scanCanvas = null;
 var pc = null, localStream = null, scanStream = null, scanning = false;
 var mode = null; // 'broadcast' | 'watch'
 
+// PIN pairing state
+var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
+var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
+var link = null, republishTimer = null, pairTimeout = null;
+var manualStarted = false;
+
 var RTC_CFG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
 function el(id) { return document.getElementById(id); }
@@ -30,19 +39,211 @@ function setStatus(msg) {
 function showPanel(which) {
   mode = which;
   el("cast-panel").classList.remove("hidden");
+  el("cast-status").textContent = "";
   el("cast-qr").innerHTML = "";
   el("cast-textwrap").classList.add("hidden");
   el("cast-actions").innerHTML = "";
-  if (which === "broadcast") broadcastFlow();
-  else watchFlow();
+  el("cast-pin-show").classList.add("hidden");
+  el("cast-pin-enter").classList.add("hidden");
+  el("cast-pin-entry-status").textContent = "";
+  el("cast-scan-wrap").classList.add("hidden");
+  el("cast-paste-wrap").classList.add("hidden");
+  var det = el("cast-manual-details");
+  det.open = false;
+  manualStarted = false;
+  stopPairing();
+  if (which === "broadcast") broadcastPinFlow();
+  else watchPinFlow();
 }
 
 function closePanel() {
   stopScanning();
+  stopPairing();
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   if (localStream) { localStream.getTracks().forEach(function (t) { t.stop(); }); localStream = null; }
   el("cast-panel").classList.add("hidden");
   mode = null;
+}
+
+/* ---------------- PIN pairing ---------------- */
+
+function stopPairing() {
+  if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
+  if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+  if (link) { try { link.close(); } catch (e) {} link = null; }
+}
+
+function makePin() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function pairingUnavailable() {
+  stopPairing();
+  setStatus("Couldn't reach the pairing service — check internet, or use manual codes below.");
+  openManualFallback();
+}
+
+function openManualFallback() {
+  var det = el("cast-manual-details");
+  det.open = true; // the toggle handler starts the manual flow
+}
+
+// The manual flow starts lazily the first time the fallback is opened.
+function wireManualToggle() {
+  el("cast-manual-details").addEventListener("toggle", function () {
+    if (el("cast-manual-details").open && !manualStarted) {
+      manualStarted = true;
+      el("cast-actions").innerHTML = "";
+      if (mode === "broadcast") broadcastManualFlow();
+      else watchManualFlow();
+    }
+  });
+}
+
+// Broadcast (phone): type the laptop's code, camera pairs automatically.
+function broadcastPinFlow() {
+  if (typeof MqttLink === "undefined") { pairingUnavailable(); return; }
+  el("cast-pin-enter").classList.remove("hidden");
+  var input = el("cast-pin-input");
+  var entryStatus = el("cast-pin-entry-status");
+  input.value = "";
+  entryStatus.textContent = "";
+  setStatus("Enter the 6-digit code shown on the laptop.");
+  el("btn-cast-pair").onclick = function () {
+    var pin = (input.value || "").replace(/\D/g, "");
+    if (pin.length !== 6) { entryStatus.textContent = "That code needs 6 digits."; return; }
+    entryStatus.textContent = "";
+    el("cast-pin-enter").classList.add("hidden");
+    startBroadcastPairing(pin);
+  };
+  input.onkeydown = function (ev) { if (ev.key === "Enter") el("btn-cast-pair").click(); };
+  setTimeout(function () { try { input.focus(); } catch (e) {} }, 60);
+}
+
+function startBroadcastPairing(pin) {
+  setStatus("Starting phone camera…");
+  navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+    audio: false
+  }).then(function (stream) {
+    localStream = stream;
+    // Wake lock so the phone doesn't sleep mid-session.
+    try {
+      if (navigator.wakeLock) navigator.wakeLock.request("screen");
+    } catch (e) {}
+    setStatus("Creating broadcast offer…");
+    pc = new RTCPeerConnection(RTC_CFG);
+    stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
+    preferSingleCodec(pc, "video"); // one codec -> smaller offer
+    return pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription(offer);
+    }).then(function () {
+      return waitIceComplete(pc);
+    }).then(function () {
+      var offerMsg = encodeMsg("offer", pc.localDescription.sdp);
+      var answered = false;
+      setStatus("Pairing…");
+      link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
+        onReady: function () {
+          setStatus("Waiting for the laptop to answer…");
+          var sendOffer = function () { if (!answered && link) link.send(JSON.parse(offerMsg)); };
+          sendOffer();
+          republishTimer = setInterval(sendOffer, 2500); // don't miss a late join
+          pairTimeout = setTimeout(function () {
+            if (!answered) { stopPairing(); setStatus("No answer from the laptop — check the code and try again."); }
+          }, 120000);
+        },
+        onMessage: function (o) {
+          var d;
+          try { d = decodeMsg(JSON.stringify(o)); } catch (e) { return; }
+          if (d.t !== "answer" || answered) return;
+          answered = true;
+          stopPairing();
+          pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: d.sdp })).then(function () {
+            setStatus("✓ Broadcasting — keep this page open. The laptop has your feed.");
+          }).catch(function () {
+            setStatus("Pairing failed — try again.");
+          });
+        },
+        onError: pairingUnavailable,
+        onClose: function () {
+          if (!answered) { stopPairing(); setStatus("Pairing connection lost — try again."); }
+        }
+      });
+    });
+  }).catch(function () {
+    setStatus("Phone camera blocked — allow access and retry.");
+  });
+}
+
+// Watch (laptop): show the code, wait for the phone, connect automatically.
+function watchPinFlow() {
+  if (typeof MqttLink === "undefined") { pairingUnavailable(); return; }
+  var pin = makePin();
+  el("cast-pin").textContent = pin;
+  el("cast-pin-show").classList.remove("hidden");
+  el("cast-pin-hint").textContent = "Waiting for the phone…";
+  setStatus("On your phone: open this page, tap “📡 Phone: broadcast camera”, and enter the code.");
+  var gotOffer = false, connected = false;
+  link = MqttLink.connect(BROKER_URL, SIGNAL_TOPIC_PREFIX + pin, {
+    onReady: function () {
+      link.send({ t: "hello" }); // nudge a phone that's already waiting
+    },
+    onMessage: function (o) {
+      if (o.t === "offer" && !gotOffer) { gotOffer = true; applyOfferPin(o); }
+    },
+    onError: pairingUnavailable,
+    onClose: function () {
+      if (!connected) { stopPairing(); setStatus("Pairing connection lost — try again."); }
+    }
+  });
+  pairTimeout = setTimeout(function () {
+    if (!gotOffer && !connected) {
+      el("cast-pin-hint").textContent = "Still waiting… make sure the phone entered the same code.";
+    }
+  }, 30000);
+
+  function applyOfferPin(o) {
+    if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
+    var d;
+    try {
+      d = decodeMsg(JSON.stringify(o));
+      if (d.t !== "offer") throw new Error("not an offer");
+    } catch (e) {
+      gotOffer = false;
+      return;
+    }
+    setStatus("Phone found — connecting…");
+    el("cast-pin-hint").textContent = "Phone found — connecting…";
+    pc = new RTCPeerConnection(RTC_CFG);
+    pc.ontrack = function (ev) {
+      var stream = ev.streams && ev.streams[0];
+      if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
+        window.SessionApp.onRemoteStream(stream);
+      }
+      connected = true;
+      stopPairing();
+      el("cast-pin-show").classList.add("hidden");
+      setStatus("✓ Phone camera connected — start the session below.");
+    };
+    pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: d.sdp }))
+      .then(function () { return pc.createAnswer(); })
+      .then(function (ans) { return pc.setLocalDescription(ans); })
+      .then(function () { return waitIceComplete(pc); })
+      .then(function () {
+        var answerMsg = encodeMsg("answer", pc.localDescription.sdp);
+        var sendAnswer = function () { if (!connected && link) link.send(JSON.parse(answerMsg)); };
+        sendAnswer();
+        republishTimer = setInterval(sendAnswer, 2500);
+        pairTimeout = setTimeout(function () {
+          if (!connected) { stopPairing(); setStatus("The phone didn't connect — try pairing again."); }
+        }, 120000);
+      })
+      .catch(function () {
+        gotOffer = false;
+        setStatus("Connection failed — retry the handshake.");
+      });
+  }
 }
 
 /* ---------------- SDP helpers ---------------- */
@@ -214,7 +415,7 @@ function openPaste(onText) {
 
 /* ---------------- Broadcast (phone) ---------------- */
 
-function broadcastFlow() {
+function broadcastManualFlow() {
   setStatus("Starting phone camera…");
   navigator.mediaDevices.getUserMedia({
     video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -263,7 +464,7 @@ function broadcastFlow() {
 
 /* ---------------- Watch (laptop) ---------------- */
 
-function watchFlow() {
+function watchManualFlow() {
   setStatus("Get the offer code from the phone.");
   actionButton("Scan phone's QR", function () { openScanner(applyOffer); });
   actionButton("Paste offer text", function () { openPaste(applyOffer); });
@@ -314,6 +515,7 @@ document.addEventListener("DOMContentLoaded", function () {
   el("btn-broadcast").addEventListener("click", function () { showPanel("broadcast"); });
   el("btn-watch").addEventListener("click", function () { showPanel("watch"); });
   el("btn-cast-close").addEventListener("click", closePanel);
+  wireManualToggle();
   el("btn-copy-code").addEventListener("click", function () {
     el("cast-text").select();
     try { document.execCommand("copy"); } catch (e) {}
