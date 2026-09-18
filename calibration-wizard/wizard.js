@@ -972,6 +972,27 @@
 
   window.addEventListener("resize", function () { layoutMedia(); });
 
+  // Build tag + refresh (same pattern as the session page): the tag is read
+  // from this script's own ?v= cache-buster so both devices can confirm
+  // they're on the same build, and the button force-reloads without
+  // closing the tab.
+  (function () {
+    var build = "dev";
+    try {
+      var scripts = document.getElementsByTagName("script");
+      for (var i = scripts.length - 1; i >= 0; i--) {
+        var m = (scripts[i].src || "").match(/wizard\.js\?v=([0-9A-Za-z]+)/);
+        if (m) { build = m[1]; break; }
+      }
+    } catch (e) {}
+    var tag = $("build-tag");
+    if (tag) tag.textContent = "build " + build;
+    var rb = $("btn-refresh");
+    if (rb) rb.addEventListener("click", function () {
+      location.replace(location.pathname + "?fresh=" + Date.now());
+    });
+  })();
+
   // ------------------------------------------------------------ init
   restore();
   fillMeasurements();

@@ -222,10 +222,15 @@ input[type="number"], input[type="text"] {
 .bigstats label { color: var(--muted); font-size: 0.8rem; margin: 0; }
 
 .app-footer {
-  text-align: center;
+  display: flex; align-items: center; justify-content: center; gap: 0.6rem;
   color: var(--muted);
   font-size: 0.8rem;
   padding: 1.5rem 0 0;
+}
+.mono { font-family: monospace; }
+.foot-refresh {
+  background: none; border: 1px solid var(--muted); color: var(--muted);
+  border-radius: 8px; padding: 0.3rem 0.7rem; font-size: 0.8rem; cursor: pointer;
 }
 
 .preset-on { outline: 2px solid var(--accent); background: #3a2c10; }
