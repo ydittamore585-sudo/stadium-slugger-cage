@@ -49,7 +49,12 @@ var MPH_PER_MPS = 2.23694;
 /* Ray from camera center through the ground-projected point.          */
 /* ------------------------------------------------------------------ */
 function imageToWorld(u, v, zAssumedM) {
-  var H = PROFILE.homography.imageToGround;
+  // Prefer the live phone calibration (tap-calibrated on this session's feed)
+  // over the built-in profile. Falls back to PROFILE when no live calibration
+  // has been applied yet. Both are 3x3 nested arrays, meters.
+  var live = (typeof window !== "undefined" && window.SessionApp &&
+              window.SessionApp.phoneCalibration) || null;
+  var H = (live && live.H) ? live.H : PROFILE.homography.imageToGround;
   var g = CageCalibration.applyH
     ? CageCalibration.applyH(H, u, v)
     : applyH(H, u, v);
@@ -115,6 +120,7 @@ proc.width = PROC_W; proc.height = PROC_H;
 // Motion detection state.
 var prevFrame = null;
 var swingCooldownUntil = 0;
+var COOLDOWN_MS = 3000; // min ms between logged swings (debounce double-triggers)
 var pendingSwing = null; // { t0, ballTrack: [] }
 var wakeLock = null;
 
@@ -233,32 +239,49 @@ function trackBall() {
   });
 }
 
+var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
+
 function detectBallTrail(frames, W, H) {
-  // Simple approach: frame-to-frame bright-pixel motion in the
-  // outfield half (ball moves away from camera after contact).
-  // Returns [{u,v,t}] or null if quality gates fail.
+  // Three-frame differencing + blob check.
+  // motion(x,y,t) = min(|I(t)-I(t-1)|, |I(t+1)-I(t)|): a pixel must differ
+  // from BOTH neighbors, which rejects single-frame flashes (sensor noise,
+  // compression artifacts) and keeps consistently moving objects.
+  // A real ball is a small bright blob: 4-20 bright px in a 5x5 window.
+  // score = motion * (bright/255) * blobFactor; per-pixel max = 765*1*1.
+  // The old gate (>900) was mathematically impossible — no trail ever passed.
   var trail = [];
-  var prev = null;
-  for (var f = 0; f < frames.length; f++) {
+  for (var f = 1; f < frames.length - 1; f++) {
     var d = frames[f].data;
+    var dp = frames[f - 1].data, dn = frames[f + 1].data;
     var best = null, bestScore = 0;
     // Search region: upper 2/3 (away from camera), exclude edges.
-    for (var y = Math.floor(H*0.08); y < Math.floor(H*0.65); y += 4) {
-      for (var x = Math.floor(W*0.15); x < Math.floor(W*0.85); x += 4) {
+    for (var y = Math.floor(H * 0.08); y < Math.floor(H * 0.65); y += 3) {
+      for (var x = Math.floor(W * 0.15); x < Math.floor(W * 0.85); x += 3) {
         var i = (y * W + x) * 4;
-        var bright = (d[i] + d[i+1] + d[i+2]) / 3;
-        if (bright < 150) continue; // ball is bright white
-        var motion = 0;
-        if (prev) {
-          var pd = prev.data;
-          motion = Math.abs(d[i]-pd[i]) + Math.abs(d[i+1]-pd[i+1]) + Math.abs(d[i+2]-pd[i+2]);
+        var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
+        if (bright < 140) continue; // ball is bright white
+        var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
+        var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
+        var motion = m1 < m2 ? m1 : m2;
+        if (motion < 60) continue; // must be moving across frames, not static
+        // Blob check: ball-sized bright cluster, not a speck or a wall.
+        var blob = 0;
+        for (var dy = -2; dy <= 2; dy++) {
+          var yy = y + dy;
+          if (yy < 0 || yy >= H) continue;
+          for (var dx = -2; dx <= 2; dx++) {
+            var xx = x + dx;
+            if (xx < 0 || xx >= W) continue;
+            var j = (yy * W + xx) * 4;
+            if ((d[j] + d[j + 1] + d[j + 2]) / 3 > 120) blob++;
+          }
         }
-        var score = motion * (bright / 255);
+        if (blob < 4 || blob > 20) continue;
+        var score = motion * (bright / 255) * (blob < 10 ? blob / 10 : 1);
         if (score > bestScore) { bestScore = score; best = { x: x, y: y }; }
       }
     }
-    prev = frames[f];
-    if (best && bestScore > 900) trail.push({ u: best.u !== undefined ? best.u : best.x, v: best.y, t: f / 30 });
+    if (best && bestScore > BALL_SCORE_GATE) trail.push({ u: best.x, v: best.y, t: f / 30 });
   }
   // Quality gates.
   if (trail.length < 5) return null;
@@ -696,8 +719,10 @@ document.getElementById("src-local").addEventListener("click", selectLocal);
 });
 
 // Called by cast.js when the phone's stream arrives.
-window.SessionApp = {
-  onRemoteStream: function (stream) {
+// Merge, don't replace: calib.js stashes the live phone calibration on this
+// same object, and replacing it would silently drop the calibration.
+window.SessionApp = window.SessionApp || {};
+window.SessionApp.onRemoteStream = function (stream) {
     remoteMode = true;
     if (state.stream) {
       try { state.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
@@ -718,8 +743,8 @@ window.SessionApp = {
       "Viewing the phone's camera — analysis runs on this laptop.<br>" +
       "Load the phone's calibration file below for accurate numbers.";
     setProfileWarning("Using the laptop calibration with the phone camera: numbers are approximate until you load the phone's own calibration export.");
-  },
-  loadProfile: function (p) {
+  };
+  window.SessionApp.loadProfile = function (p) {
     if (!p || p.format !== "stadium-slugger/cage-calibration" ||
         !p.homography || !p.homography.imageToGround) {
       throw new Error("not a cage calibration profile");
@@ -740,8 +765,7 @@ window.SessionApp = {
     profileInfoEl.textContent =
       "Profile: " + PROFILE.label + " (verified=" + PROFILE.verified + ") loaded from file.";
     setProfileWarning(p.verified ? "" : "Profile is not verified — numbers are uncalibrated estimates.");
-  }
-};
+  };
 
 document.getElementById("profile-file").addEventListener("change", function (ev) {
   var f = ev.target.files && ev.target.files[0];
