@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <title>Cage Session — Stadium Slugger</title>
-<link rel="stylesheet" href="styles.css?v=20260917d">
+<link rel="stylesheet" href="styles.css?v=20260918b">
 </head>
 <body>
 <div id="app">
@@ -102,8 +102,9 @@
   <div id="controls">
     <button id="btn-start" class="big">● Start Live Session</button>
     <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
+    <button id="btn-mark" class="big hidden" title="Log a swing manually — ground truth for detector tuning">✋ Mark Swing</button>
   </div>
-  <label id="clip-toggle-wrap"><input type="checkbox" id="clip-toggle" checked> Save each swing's clip to the folder + replay in the log (~2 MB each)</label>
+  <label id="clip-toggle-wrap"><input type="checkbox" id="clip-toggle" checked> Save each swing's clip to the folder + replay in the log (~5 s: 3 s pre-roll + 2 s post, ~2.5 MB each)</label>
   <div id="controls2">
     <button id="btn-download" class="hidden" disabled>⬇ Save Swing Log</button>
     <button id="btn-sound">🔊 Sound on</button>
@@ -138,8 +139,8 @@
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
-<script src="cast.js?v=20260918a"></script>
+<script src="cast.js?v=20260918b"></script>
 <script src="calib.js?v=20260917i"></script>
-<script src="session.js?v=20260918a"></script>
+<script src="session.js?v=20260918b"></script>
 </body>
 </html>

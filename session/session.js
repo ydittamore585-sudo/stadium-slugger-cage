@@ -52,9 +52,8 @@ function imageToWorld(u, v, zAssumedM) {
   // Prefer the live phone calibration (tap-calibrated on this session's feed)
   // over the built-in profile. Falls back to PROFILE when no live calibration
   // has been applied yet. Both are 3x3 nested arrays, meters.
-  var live = (typeof window !== "undefined" && window.SessionApp &&
-              window.SessionApp.phoneCalibration) || null;
-  var H = (live && live.H) ? live.H : PROFILE.homography.imageToGround;
+  var H = activeHomography().H;
+  if (!H) return null;
   var g = CageCalibration.applyH
     ? CageCalibration.applyH(H, u, v)
     : applyH(H, u, v);
@@ -88,6 +87,10 @@ var overlay = document.getElementById("overlay");
 var octx = overlay.getContext("2d");
 var btnStart = document.getElementById("btn-start");
 var btnStop = document.getElementById("btn-stop");
+var btnMark = document.getElementById("btn-mark");
+if (btnMark) btnMark.addEventListener("click", function () {
+  if (state.recording) markSwingManual();
+});
 var btnDownload = document.getElementById("btn-download");
 var statusEl = document.getElementById("session-status");
 var swingLogEl = document.getElementById("swing-log");
@@ -180,6 +183,8 @@ var SENS_LEVELS = {
 };
 var motionLevel = "normal";
 var consecHot = 0, quietFrames = 0, armed = true;
+var lastHotFrac = 0; // latest motion reading, for manual-mark detector snapshots
+var motionSeed = null; // {x, y (0-1 frame-normalized), t} — freshest motion centroid
 
 function frameMotion() {
   pctx.drawImage(video, 0, 0, PROC_W, PROC_H);
@@ -190,6 +195,7 @@ function frameMotion() {
       rw = Math.floor(SWING_ROI.w * PROC_W),
       rh = Math.floor(SWING_ROI.h * PROC_H);
   var hot = 0, total = 0, energy = 0, signed = 0;
+  var hotSumX = 0, hotSumY = 0; // centroid of hot pixels (Step 4: seed the ball search)
   if (prevFrame) {
     for (var y = ry; y < ry + rh; y += 2) {
       for (var x = rx; x < rx + rw; x += 2) {
@@ -202,14 +208,17 @@ function frameMotion() {
         energy += ad;
         signed += diff;
         total++;
-        if (ad > HOT_PX_DIFF) hot++;
+        if (ad > HOT_PX_DIFF) { hot++; hotSumX += x; hotSumY += y; }
       }
     }
   }
   prevFrame = new Uint8ClampedArray(d);
   return {
     hotFrac: total ? hot / total : 0,
-    biasRatio: energy > 0 ? Math.abs(signed) / energy : 0
+    biasRatio: energy > 0 ? Math.abs(signed) / energy : 0,
+    // Centroid of motion in PROC-space px, or null when nothing is hot.
+    hotX: hot ? hotSumX / hot : null,
+    hotY: hot ? hotSumY / hot : null
   };
 }
 
@@ -220,7 +229,7 @@ function frameMotion() {
 var BALL_TRACK_FRAMES = 12;
 var BALL_MIN_DISPLACEMENT_PX = 8; // full-res px over the track
 
-function trackBall() {
+function trackBall(seed) {
   // Capture full-res frames for BALL_TRACK_FRAMES.
   var cap = document.createElement("canvas");
   cap.width = video.videoWidth; cap.height = video.videoHeight;
@@ -233,7 +242,7 @@ function trackBall() {
       frames.push(cctx.getImageData(0, 0, cap.width, cap.height));
       if (++n >= BALL_TRACK_FRAMES) {
         clearInterval(iv);
-        resolve(detectBallTrail(frames, cap.width, cap.height));
+        resolve(detectBallTrail(frames, cap.width, cap.height, seed));
       }
     }, 1000 / 30);
   });
@@ -241,7 +250,7 @@ function trackBall() {
 
 var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
 
-function detectBallTrail(frames, W, H) {
+function detectBallTrail(frames, W, H, seed) {
   // Three-frame differencing + blob check.
   // motion(x,y,t) = min(|I(t)-I(t-1)|, |I(t+1)-I(t)|): a pixel must differ
   // from BOTH neighbors, which rejects single-frame flashes (sensor noise,
@@ -249,14 +258,29 @@ function detectBallTrail(frames, W, H) {
   // A real ball is a small bright blob: 4-20 bright px in a 5x5 window.
   // score = motion * (bright/255) * blobFactor; per-pixel max = 765*1*1.
   // The old gate (>900) was mathematically impossible — no trail ever passed.
+  //
+  // seed = {x, y} motion centroid, 0-1 frame-normalized, < 5 s old.
+  // Seeded search: window around the centroid, biased upward — the ball
+  // travels up/away after contact and would exit a centered window in
+  // ~3 frames. No/fresh seed: full upper-2/3 fallback region.
+  var rx0, rx1, ry0, ry1;
+  if (seed) {
+    var cx = seed.x * W, cy = seed.y * H;
+    rx0 = Math.max(0, Math.floor(cx - 0.25 * W));
+    rx1 = Math.min(W, Math.ceil(cx + 0.25 * W));
+    ry0 = Math.max(0, Math.floor(cy - 0.35 * H));
+    ry1 = Math.min(H, Math.ceil(cy + 0.15 * H));
+  } else {
+    rx0 = Math.floor(W * 0.15); rx1 = Math.ceil(W * 0.85);
+    ry0 = Math.floor(H * 0.08); ry1 = Math.ceil(H * 0.65);
+  }
   var trail = [];
   for (var f = 1; f < frames.length - 1; f++) {
     var d = frames[f].data;
     var dp = frames[f - 1].data, dn = frames[f + 1].data;
     var best = null, bestScore = 0;
-    // Search region: upper 2/3 (away from camera), exclude edges.
-    for (var y = Math.floor(H * 0.08); y < Math.floor(H * 0.65); y += 3) {
-      for (var x = Math.floor(W * 0.15); x < Math.floor(W * 0.85); x += 3) {
+    for (var y = ry0; y < ry1; y += 3) {
+      for (var x = rx0; x < rx1; x += 3) {
         var i = (y * W + x) * 4;
         var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
         if (bright < 140) continue; // ball is bright white
@@ -295,50 +319,241 @@ function detectBallTrail(frames, W, H) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Small linear algebra for the trajectory fits.                       */
+/* ------------------------------------------------------------------ */
+function invert3(m) {
+  var a = m[0][0], b = m[0][1], c = m[0][2];
+  var d = m[1][0], e = m[1][1], f = m[1][2];
+  var g = m[2][0], h = m[2][1], i = m[2][2];
+  var A = e*i - f*h, B = f*g - d*i, C = d*h - e*g;
+  var det = a*A + b*B + c*C;
+  if (!isFinite(det) || Math.abs(det) < 1e-12) return null;
+  return [
+    [A / det, (c*h - b*i) / det, (b*f - c*e) / det],
+    [B / det, (a*i - c*g) / det, (c*d - a*f) / det],
+    [C / det, (b*g - a*h) / det, (a*e - b*d) / det]
+  ];
+}
+
+// General NxN linear solve: Gaussian elimination with partial pivoting.
+// Null when singular.
+function solveN(M, rhs) {
+  var n = rhs.length;
+  var A = M.map(function (row) { return row.slice(); });
+  var x = rhs.slice();
+  for (var col = 0; col < n; col++) {
+    var piv = col;
+    for (var r = col + 1; r < n; r++) {
+      if (Math.abs(A[r][col]) > Math.abs(A[piv][col])) piv = r;
+    }
+    if (Math.abs(A[piv][col]) < 1e-12) return null;
+    if (piv !== col) {
+      var t = A[col]; A[col] = A[piv]; A[piv] = t;
+      var tx = x[col]; x[col] = x[piv]; x[piv] = tx;
+    }
+    for (var r2 = col + 1; r2 < n; r2++) {
+      var f = A[r2][col] / A[col][col];
+      for (var c2 = col; c2 < n; c2++) A[r2][c2] -= f * A[col][c2];
+      x[r2] -= f * x[col];
+    }
+  }
+  var out = new Array(n);
+  for (var i = n - 1; i >= 0; i--) {
+    var s = x[i];
+    for (var j = i + 1; j < n; j++) s -= A[i][j] * out[j];
+    if (Math.abs(A[i][i]) < 1e-12) return null;
+    out[i] = s / A[i][i];
+  }
+  return out;
+}
+
+// 3x3 linear solve (Gaussian elimination, partial pivoting). Null if singular.
+function solve3(M, rhs) {
+  return solveN(M, rhs);
+}
+
+// Ballistic fit: p(t) = p0 + v0*t - 0.5*g*t^2 in z, Gauss-Newton over the
+// 6 params [x0,y0,z0,vx,vy,vz] minimizing reprojection error in px.
+// Exact perspective handling — no per-frame height assumption, no
+// image-space polynomial approximation. Returns {v0, p0, rmsePx} or null.
+// NOTE: v0 is the velocity at the FIRST TRAIL POINT (~1 frame after
+// contact); analyzeSwing gravity-corrects vz back to contact time.
+function ballisticFit(trail, Hh) {
+  var n = trail.length;
+  if (n < 4) return null; // 2n equations, 6 unknowns — need margin
+  var G = 9.81;
+  // Initial guess: unproject at contact height, linear fit for velocity.
+  var ts = [], xs = [], ys = [];
+  for (var k = 0; k < n; k++) {
+    var w = imageToWorld(trail[k].u, trail[k].v, CONTACT_HEIGHT_M);
+    if (!w) return null;
+    ts.push(trail[k].t - trail[0].t); xs.push(w.x); ys.push(w.y);
+  }
+  var fx = linFit(ts, xs), fy = linFit(ts, ys);
+  if (!fx || !fy) return null;
+  var th = [fx.c, fy.c, CONTACT_HEIGHT_M, fx.b, fy.b, 0]; // [x0,y0,z0,vx,vy,vz]
+
+  function predict(th, t) {
+    return worldToImage(Hh,
+      th[0] + th[3] * t,
+      th[1] + th[4] * t,
+      th[2] + th[5] * t - 0.5 * G * t * t);
+  }
+
+  var iter = 0;
+  for (iter = 0; iter < 15; iter++) {
+    var r = new Array(2 * n);
+    var J = [];
+    for (var k2 = 0; k2 < 2 * n; k2++) J.push([0, 0, 0, 0, 0, 0]);
+    var ok = true;
+    for (var k3 = 0; k3 < n; k3++) {
+      var t = trail[k3].t - trail[0].t;
+      var pr = predict(th, t);
+      if (!pr) { ok = false; break; }
+      r[2 * k3] = pr[0] - trail[k3].u;
+      r[2 * k3 + 1] = pr[1] - trail[k3].v;
+      for (var p = 0; p < 6; p++) {
+        var h = Math.max(1e-7, Math.abs(th[p]) * 1e-6);
+        var th2 = th.slice(); th2[p] += h;
+        var pr2 = predict(th2, t);
+        if (!pr2) { ok = false; break; }
+        J[2 * k3][p] = (pr2[0] - pr[0]) / h;
+        J[2 * k3 + 1][p] = (pr2[1] - pr[1]) / h;
+      }
+      if (!ok) break;
+    }
+    if (!ok) return null;
+    // Normal equations: (J^T J) d = -J^T r.
+    var JTJ = [], JTr = [0, 0, 0, 0, 0, 0];
+    for (var a = 0; a < 6; a++) {
+      JTJ.push([0, 0, 0, 0, 0, 0]);
+      for (var b = 0; b < 6; b++) {
+        var s = 0;
+        for (var m = 0; m < 2 * n; m++) s += J[m][a] * J[m][b];
+        JTJ[a][b] = s;
+      }
+      var sr = 0;
+      for (var m2 = 0; m2 < 2 * n; m2++) sr += J[m2][a] * r[m2];
+      JTr[a] = -sr;
+    }
+    var d = solveN(JTJ, JTr);
+    if (!d) return null;
+    var maxStep = 0;
+    for (var q = 0; q < 6; q++) {
+      th[q] += d[q];
+      if (Math.abs(d[q]) > maxStep) maxStep = Math.abs(d[q]);
+    }
+    if (maxStep < 1e-9) break;
+  }
+  var se = 0;
+  for (var k4 = 0; k4 < n; k4++) {
+    var t4 = trail[k4].t - trail[0].t;
+    var pr4 = predict(th, t4);
+    if (!pr4) return null;
+    se += (pr4[0] - trail[k4].u) * (pr4[0] - trail[k4].u) +
+          (pr4[1] - trail[k4].v) * (pr4[1] - trail[k4].v);
+  }
+  return {
+    v0: { x: th[3], y: th[4], z: th[5] },
+    p0: { x: th[0], y: th[1], z: th[2] },
+    rmsePx: Math.sqrt(se / (2 * n)),
+    iters: iter + 1
+  };
+}
+
+// Linear least squares: p(t) = b*t + c. Initial-guess workhorse.
+function linFit(ts, ps) {
+  var n = ts.length;
+  if (n < 2) return null;
+  var St = 0, Sp = 0, Stt = 0, Stp = 0;
+  for (var i = 0; i < n; i++) {
+    St += ts[i]; Sp += ps[i]; Stt += ts[i] * ts[i]; Stp += ts[i] * ps[i];
+  }
+  var denom = n * Stt - St * St;
+  if (Math.abs(denom) < 1e-12) return null;
+  var b = (n * Stp - St * Sp) / denom;
+  var c = (Sp - b * St) / n;
+  var se = 0;
+  for (var j = 0; j < n; j++) {
+    var r = ps[j] - (b * ts[j] + c);
+    se += r * r;
+  }
+  return { a: 0, b: b, c: c, rmse: Math.sqrt(se / n) };
+}
+
+/* ------------------------------------------------------------------ */
+/* Active calibration: live phone homography preferred, PROFILE fallback.
+   Always returns {H, Hinv} as 3x3 nested arrays.                       */
+/* ------------------------------------------------------------------ */
+function activeHomography() {
+  var live = (typeof window !== "undefined" && window.SessionApp &&
+              window.SessionApp.phoneCalibration) || null;
+  var H = (live && live.H) ? live.H : PROFILE.homography.imageToGround;
+  var Hinv = (live && live.Hinv) ? live.Hinv : invert3(H);
+  return { H: H, Hinv: Hinv };
+}
+
+// worldToImage: invert the ray model. World (x,y) at height z (m) -> pixel.
+// From imageToWorld: (x,y) = C_xy + t*(G0-C_xy), t=(C.z-z)/C.z,
+// so G0 = C_xy + ((x,y)-C_xy)/t, then (u,v) = applyH(Hinv, G0).
+function worldToImage(Hh, x, y, z) {
+  if (!Hh.Hinv || !isFinite(CAM.z) || Math.abs(CAM.z) < 1e-6) return null;
+  var t = (CAM.z - z) / CAM.z;
+  if (Math.abs(t) < 1e-6) return null;
+  var gx = CAM.x + (x - CAM.x) / t;
+  var gy = CAM.y + (y - CAM.y) / t;
+  return applyH(Hh.Hinv, gx, gy);
+}
+
+/* ------------------------------------------------------------------ */
 /* Metrics (imperial out).                                             */
 /* ------------------------------------------------------------------ */
 var CONTACT_HEIGHT_M = 0.914; // 3 ft assumed contact height
+var FIT_RMSE_GATE_PX = 4;     // ballistic fit must explain the trail to 4 px
+var VPERP_NOISE_PXPS = 45;    // 1.5 px/frame @ 30 fps: below this, LA is noise
+var CONTACT_LAG_S = 1 / 30;   // first trail point lags contact by ~1 frame;
+                              // vz is gravity-corrected back to contact time
 
 function analyzeSwing(trail) {
   if (!trail) {
     return { tracked: false, reason: "ball not tracked reliably" };
   }
-  // 3D positions assuming contact-plane height (fail-closed: labeled estimate).
-  var pts = [];
-  for (var k = 0; k < trail.length; k++) {
-    var w = imageToWorld(trail[k].u, trail[k].v, CONTACT_HEIGHT_M);
-    if (!w) return { tracked: false, reason: "projection failed" };
-    pts.push({ x: w.x, y: w.y, t: trail[k].t });
+  var n = trail.length;
+  if (n < 4) return { tracked: false, reason: "trail too short (" + n + " points)" };
+
+  var Hh = activeHomography();
+  if (!Hh.H || !Hh.Hinv) return { tracked: false, reason: "no calibration available" };
+
+  // Joint 3D ballistic fit — the residual is the honest fit quality.
+  var fit = ballisticFit(trail, Hh);
+  if (!fit) return { tracked: false, reason: "trajectory fit failed" };
+  if (fit.rmsePx > FIT_RMSE_GATE_PX) {
+    return { tracked: false, reason: "trajectory fit too loose (" + fit.rmsePx.toFixed(1) + " px RMSE)" };
   }
-  // Linear fit for vx, vy over the track.
-  var n = pts.length;
-  var sx = 0, sy = 0, st = 0, sxx = 0, sxy = 0, sxt = 0, syt = 0, stt = 0;
-  for (var j = 0; j < n; j++) {
-    sx += pts[j].x; sy += pts[j].y; st += pts[j].t;
-    sxt += pts[j].x * pts[j].t; syt += pts[j].y * pts[j].t; stt += pts[j].t * pts[j].t;
-  }
-  var denom = n * stt - st * st;
-  if (Math.abs(denom) < 1e-9) return { tracked: false, reason: "degenerate fit" };
-  var vx = (n * sxt - sx * st) / denom;
-  var vy = (n * syt - sy * st) / denom;
-  var vHoriz = Math.sqrt(vx*vx + vy*vy);
+
+  var vx = fit.v0.x, vy = fit.v0.y;
+  // The fit's vz is at the first trail point (~1 frame after contact).
+  // Gravity-correct back to contact time for an honest launch angle.
+  var vz = fit.v0.z + 9.81 * CONTACT_LAG_S;
+  var vHoriz = Math.sqrt(vx * vx + vy * vy);
   if (vHoriz < 3) return { tracked: false, reason: "ball too slow to be a batted ball" };
 
-  // Vertical: from image-plane vertical motion scaled by heightScale.
-  // Depth-adjust: scale pxPerM by (dist to ball)/(dist to calibration sample).
-  var u0 = trail[0].u, v0 = trail[0].v;
-  var u1 = trail[trail.length-1].u, v1 = trail[trail.length-1].v;
-  var dt = trail[trail.length-1].t - trail[0].t;
-  var dvPx = v0 - v1; // up is negative v; positive dvPx = rising
-  var w0 = imageToWorld(u0, v0, CONTACT_HEIGHT_M);
-  var distBall = Math.sqrt((w0.x-CAM.x)*(w0.x-CAM.x) + (w0.y-CAM.y)*(w0.y-CAM.y));
-  var distCalib = Math.sqrt(1.9*1.9 + 1.5*1.5); // calib sample at ~(1.9,1.5)
-  var pxPerM_local = PROFILE.heightScale.pxPerM * (distCalib / distBall);
-  var vz = (dvPx / pxPerM_local) / dt;
+  // Launch angle: the fitted vz, gated by the centroid noise floor.
+  // Below the floor, LA is "insufficient evidence" — never a fake ~0°.
+  var launchAngleDeg = null;
+  var w0 = imageToWorld(trail[0].u, trail[0].v, CONTACT_HEIGHT_M);
+  if (w0) {
+    var distBall = Math.sqrt((w0.x - CAM.x) * (w0.x - CAM.x) + (w0.y - CAM.y) * (w0.y - CAM.y));
+    var distCalib = Math.sqrt(1.9 * 1.9 + 1.5 * 1.5); // calib sample at ~(1.9,1.5)
+    var pxPerM_local = PROFILE.heightScale.pxPerM * (distCalib / distBall);
+    var vzNoise = VPERP_NOISE_PXPS / pxPerM_local; // m/s
+    if (Math.abs(vz) >= vzNoise) {
+      launchAngleDeg = Math.atan2(vz, vHoriz) * 180 / Math.PI;
+    }
+  }
 
-  var speedMps = Math.sqrt(vx*vx + vy*vy + vz*vz);
+  var speedMps = Math.sqrt(vx * vx + vy * vy + vz * vz);
   var exitVeloMph = speedMps * MPH_PER_MPS;
-  var launchAngleDeg = Math.atan2(vz, vHoriz) * 180 / Math.PI;
   var sprayDeg = Math.atan2(vy, vx) * 180 / Math.PI; // 0 = straightaway center
 
   // Sanity gates (fail-closed).
@@ -357,7 +572,9 @@ function analyzeSwing(trail) {
     launchAngleDeg: launchAngleDeg,
     sprayDeg: sprayDeg,
     direction: direction,
-    note: "2D+height estimate from calibrated cage camera"
+    fitRmsePx: +fit.rmsePx.toFixed(2),
+    fitModel: "ballistic-3d",
+    note: "uncalibrated estimate — needs radar truth data"
   };
 }
 
@@ -391,9 +608,25 @@ document.getElementById("btn-sound").addEventListener("click", function (ev) {
 /* Swing pipeline                                                      */
 /* ------------------------------------------------------------------ */
 function onSwingDetected() {
+  logSwing(false);
+}
+
+function markSwingManual() {
+  logSwing(true);
+}
+
+// Single funnel for auto-detected and manually marked swings.
+// Manual marks are ground truth: they bypass the cooldown entirely (a
+// manual mark is never suppressed by a nearby auto event, nor does it
+// suppress auto events). Auto and manual events within ±1.5 s are linked
+// by ID so detector recall can be measured honestly afterward.
+var RECALL_LINK_MS = 1500;
+function logSwing(manual) {
   var now = Date.now();
-  if (now < swingCooldownUntil) return;
-  swingCooldownUntil = now + COOLDOWN_MS;
+  if (!manual) {
+    if (now < swingCooldownUntil) return;
+    swingCooldownUntil = now + COOLDOWN_MS;
+  }
   state.swingCount++;
   mSwings.textContent = state.swingCount;
   drawSwingMarker();
@@ -403,11 +636,38 @@ function onSwingDetected() {
   var swingEntry = {
     id: state.swingCount,
     time: new Date().toISOString(),
-    sessionTimeSec: (now - state.sessionStart) / 1000
+    sessionTimeSec: (now - state.sessionStart) / 1000,
+    manual: !!manual,
+    // Detector state at mark time — for later recall comparison.
+    detector: manual ? {
+      consecHot: consecHot, armed: armed,
+      hotFrac: lastHotFrac, motionLevel: motionLevel
+    } : null
   };
 
+  // Link to counterpart events within ±1.5 s for recall measurement.
+  // (Both directions: manual-after-auto and auto-after-manual.)
+  var linked = [];
+  for (var i = 0; i < state.swings.length; i++) {
+    var other = state.swings[i];
+    if (!!other.manual === !!manual) continue; // only cross-link auto<->manual
+    var dt = Math.abs(other.sessionTimeSec - swingEntry.sessionTimeSec) * 1000;
+    if (dt <= RECALL_LINK_MS) {
+      linked.push(other.id);
+      if (!other.linkedIds) other.linkedIds = [];
+      if (other.linkedIds.indexOf(swingEntry.id) < 0) other.linkedIds.push(swingEntry.id);
+    }
+  }
+  if (linked.length) swingEntry.linkedIds = linked;
+
+  // Seed the ball search from the motion centroid when it is fresh —
+  // the swing ROI tells us where the action was. Stale (> 5 s) seeds fall
+  // back to the full search region inside detectBallTrail.
+  var seed = (motionSeed && now - motionSeed.t < 5000) ? motionSeed : null;
+  swingEntry.motionSeed = seed ? { x: +seed.x.toFixed(3), y: +seed.y.toFixed(3) } : null;
+
   // Track the ball, then analyze.
-  trackBall().then(function (trail) {
+  trackBall(seed).then(function (trail) {
     var result = analyzeSwing(trail);
     swingEntry.result = result;
     state.swings.push(swingEntry);
@@ -415,9 +675,15 @@ function onSwingDetected() {
     if (result.tracked) {
       beep(1320, 120); // second, higher beep: the ball was tracked
       mEV.textContent = result.exitVeloMph.toFixed(0) + " mph";
-      mLA.textContent = result.launchAngleDeg.toFixed(0) + "°";
+      mLA.textContent = fmtLA(result.launchAngleDeg, 0);
     }
   });
+}
+
+// Null LA = insufficient evidence (a worm-burner and a mis-track look
+// identical) — display "—", never a fake 0°.
+function fmtLA(la, digits) {
+  return (la === null || la === undefined || !isFinite(la)) ? "—" : la.toFixed(digits) + "°";
 }
 
 function renderSwing(entry) {
@@ -426,20 +692,23 @@ function renderSwing(entry) {
   var div = document.createElement("div");
   div.dataset.swingId = entry.id;
   var delBtn = '<button class="swing-del" data-id="' + entry.id + '" title="Delete this entry">✕</button>';
+  var srcBadge = entry.manual
+    ? ' <span class="src-badge manual">MANUAL</span>'
+    : ' <span class="src-badge auto">AUTO</span>';
   var r = entry.result;
   if (r.tracked) {
     div.className = "swing-card tracked";
     div.innerHTML = delBtn +
-      "<h3>Swing #" + entry.id + " — " + r.exitVeloMph.toFixed(0) + " mph</h3>" +
+      "<h3>Swing #" + entry.id + srcBadge + " — " + r.exitVeloMph.toFixed(0) + " mph</h3>" +
       '<div class="nums"><span>EV <b>' + r.exitVeloMph.toFixed(1) + " mph</b></span>" +
-      "<span>LA <b>" + r.launchAngleDeg.toFixed(1) + "°</b></span>" +
+      "<span>LA <b>" + fmtLA(r.launchAngleDeg, 1) + "</b></span>" +
       "<span>Direction <b>" + r.direction + "</b></span></div>" +
       '<div class="note">' + r.note + " · " +
       new Date(entry.time).toLocaleTimeString() + "</div>";
   } else {
     div.className = "swing-card notracked";
     div.innerHTML = delBtn +
-      "<h3>Swing #" + entry.id + " — no track</h3>" +
+      "<h3>Swing #" + entry.id + srcBadge + " — no track</h3>" +
       '<div class="note">' + r.reason + ". No numbers fabricated.</div>";
   }
   swingLogEl.prepend(div);
@@ -519,6 +788,10 @@ function loop(ts) {
   lastFrameTime = ts;
   try {
     var m = frameMotion();
+    lastHotFrac = m.hotFrac;
+    if (m.hotX !== null && m.hotY !== null) {
+      motionSeed = { x: m.hotX / PROC_W, y: m.hotY / PROC_H, t: Date.now() };
+    }
     if (ts - lastMeterUpdate > 200) {
       lastMeterUpdate = ts;
       updateMotionMeter(m.hotFrac);
@@ -584,6 +857,11 @@ function startSession() {
   state.swingCount = 0;
   state.sessionStart = Date.now();
   swingClips = [];
+  // Stream fingerprint at session start (from cast.js health poll, if paired).
+  try {
+    state.streamStart = window.__streamFingerprint
+      ? JSON.parse(JSON.stringify(window.__streamFingerprint)) : null;
+  } catch (e) { state.streamStart = null; }
   swingLogEl.innerHTML = '<p class="empty">No swings yet. Take a cut.</p>';
   mSwings.textContent = "0"; mEV.textContent = "—"; mLA.textContent = "—";
 
@@ -597,9 +875,11 @@ function startSession() {
   state.recording = true;
   statusEl.textContent = "● Live — watching for swings";
   statusEl.className = "status recording";
+  startClipRing(); // continuous recorder feeds the pre-roll ring
   btnStart.classList.add("hidden");
   btnStop.classList.remove("hidden");
   btnStop.disabled = false;
+  if (btnMark) btnMark.classList.remove("hidden");
   btnDownload.classList.add("hidden");
   document.getElementById("camera-hint").style.display = "none";
   mRec.textContent = clipToggle.checked ? "CLIPS" : "OFF";
@@ -615,45 +895,150 @@ function startSession() {
 
 function stopSession() {
   state.recording = false;
+  stopClipRing();
   if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
   statusEl.textContent = "Session ended";
   statusEl.className = "status idle";
   btnStop.classList.add("hidden");
   btnStart.classList.remove("hidden");
+  if (btnMark) btnMark.classList.add("hidden");
   btnDownload.classList.remove("hidden");
   btnDownload.disabled = false;
   mRec.textContent = "OFF";
 }
 
-// Capture a short clip around the swing when the toggle is on.
-function captureSwingClip(swingId) {
-  if (!clipToggle.checked || !state.stream) return;
+/* ------------------------------------------------------------------ */
+/* Clip ring buffer: continuous recorder for pre-roll + post-roll.     */
+/* MediaRecorder has no pre-roll API, so we record the whole session   */
+/* in 500 ms chunks and keep a ring; a swing clip = 3 s pre-roll +     */
+/* 2 s post-roll sliced from the ring. The first chunk (EBML header)   */
+/* is saved separately and prepended to mid-ring slices so every clip  */
+/* is a playable file.                                                 */
+/* Caveat: the blob should start at a keyframe or the first ~second    */
+/* shows garbage — Chrome emits keyframes at chunk boundaries often    */
+/* enough in practice; if clips start blocky, shorten the timeslice.   */
+/* ------------------------------------------------------------------ */
+var clipRing = [];           // Blobs, oldest first
+var CLIP_CHUNK_MS = 500;
+var CLIP_PREROLL_CHUNKS = 6; // 3 s pre-roll at 500 ms timeslices
+var CLIP_RING_MAX = 16;      // ~8 s window; bounds memory (~4 MB at 4 Mbps)
+var CLIP_POSTROLL_MS = 2000;
+var sessionRecorder = null;
+var sessionRecorderStream = null;
+var clipHeaderChunk = null;  // first chunk = EBML header; saved separately so
+                             // mid-ring clips can be prepended into playable files
+
+function pickSupportedMime() {
+  var cands = [
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4"
+  ];
+  for (var i = 0; i < cands.length; i++) {
+    try {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(cands[i])) return cands[i];
+    } catch (e) {}
+  }
+  return "";
+}
+
+function startClipRing() {
+  stopClipRing();
+  if (!state.stream || !window.MediaRecorder) return;
   try {
-    var rec = new MediaRecorder(state.stream, { videoBitsPerSecond: 4 * 1000 * 1000 });
-    var chunks = [];
-    rec.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
-    rec.onstop = function () {
-      var blob = new Blob(chunks, { type: "video/webm" });
+    var mime = pickSupportedMime();
+    var opts = { videoBitsPerSecond: 4 * 1000 * 1000 };
+    if (mime) opts.mimeType = mime;
+    sessionRecorder = new MediaRecorder(state.stream, opts);
+    sessionRecorderStream = state.stream;
+    clipRing = [];
+    clipHeaderChunk = null;
+    sessionRecorder.ondataavailable = function (e) {
+      if (e.data && e.data.size) {
+        if (!clipHeaderChunk) clipHeaderChunk = e.data; // first chunk has the EBML header
+        clipRing.push(e.data);
+        while (clipRing.length > CLIP_RING_MAX) clipRing.shift();
+      }
+    };
+    sessionRecorder.onerror = function () { /* ring is best-effort */ };
+    sessionRecorder.start(CLIP_CHUNK_MS);
+  } catch (e) {
+    sessionRecorder = null;
+    sessionRecorderStream = null;
+  }
+}
+
+function stopClipRing() {
+  if (sessionRecorder) {
+    try { if (sessionRecorder.state !== "inactive") sessionRecorder.stop(); } catch (e) {}
+    sessionRecorder = null;
+  }
+  sessionRecorderStream = null;
+  clipRing = [];
+  clipHeaderChunk = null;
+}
+
+// Chunks from two different encoders do NOT concatenate — if the stream
+// changed (camera switch), restart the ring before clipping.
+function ensureClipRing() {
+  if (state.stream && state.stream !== sessionRecorderStream) startClipRing();
+}
+
+// Capture a ~5 s clip (3 s before + 2 s after the trigger) when the toggle is on.
+function captureSwingClip(swingId) {
+  if (!clipToggle.checked) return;
+  ensureClipRing();
+  if (!sessionRecorder || sessionRecorder.state === "inactive") return;
+  var pre = clipRing.slice(-CLIP_PREROLL_CHUNKS); // refs — safe against later shifts
+  var lastPre = clipRing.length ? clipRing[clipRing.length - 1] : null;
+  setTimeout(function () {
+    try {
+      var post = [];
+      if (lastPre) {
+        var idx = clipRing.lastIndexOf(lastPre);
+        if (idx >= 0) post = clipRing.slice(idx + 1);
+      } else {
+        post = clipRing.slice(0);
+      }
+      var chunks = pre.concat(post);
+      if (!chunks.length) return;
+      // Mid-ring slices lack the EBML header — prepend the saved header
+      // chunk so the clip is a playable file. (If the slice already starts
+      // with the header, don't duplicate it.)
+      if (clipHeaderChunk && chunks[0] !== clipHeaderChunk) {
+        chunks.unshift(clipHeaderChunk);
+      }
+      var blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "video/webm" });
       swingClips.push({ id: swingId, blob: blob });
       attachClipPlayer(swingId, blob);
-    };
-    rec.start();
-    setTimeout(function () { if (rec.state !== "inactive") rec.stop(); }, 3000);
-  } catch (e) { /* clips are optional; never break the session */ }
+    } catch (e) { /* clips are optional; never break the session */ }
+  }, CLIP_POSTROLL_MS);
 }
 
 function downloadSession() {
   // Swing log JSON (the thing to send for analysis).
+  var streamEnd = null;
+  try {
+    streamEnd = window.__streamFingerprint
+      ? JSON.parse(JSON.stringify(window.__streamFingerprint)) : null;
+  } catch (e) {}
   var log = {
     exportedAt: new Date().toISOString(),
     profile: { label: PROFILE.label, verified: PROFILE.verified },
+    streamStart: state.streamStart || null,
+    streamEnd: streamEnd,
     swings: state.swings.map(function (s) {
       var r = s.result || {};
       return {
         id: s.id, time: s.time, sessionTimeSec: +s.sessionTimeSec.toFixed(2),
+        manual: !!s.manual, detector: s.detector || null,
+        linkedIds: s.linkedIds || [],
         tracked: !!r.tracked,
         exitVeloMph: r.tracked ? +r.exitVeloMph.toFixed(1) : null,
-        launchAngleDeg: r.tracked ? +r.launchAngleDeg.toFixed(1) : null,
+        launchAngleDeg: r.tracked && isFinite(r.launchAngleDeg) ? +r.launchAngleDeg.toFixed(1) : null,
+        fitRmsePx: r.tracked ? r.fitRmsePx : null,
+        fitModel: r.tracked ? r.fitModel : null,
         direction: r.tracked ? r.direction : null,
         note: r.tracked ? r.note : r.reason
       };

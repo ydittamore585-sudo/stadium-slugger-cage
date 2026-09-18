@@ -143,14 +143,22 @@ function stopPairing() {
 }
 
 // Connection-health readout: polls the peer connection every 2s and shows
-// ICE/connection state, track state, and actual RTP byte counters — so a
-// black video can be told apart from a dead handshake at a glance.
+// ICE/connection state, track state, RTP byte counters, and the inbound
+// video stream fingerprint (resolution, measured FPS, frames received /
+// dropped, jitter, codec). A black video can be told apart from a dead
+// handshake at a glance, and FPS drift > 10% is flagged — the ball
+// tracker assumes 30 fps, so a drifting stream silently biases EV.
+var lastFramesReceived = -1;
+var lastFramesDropped = -1;
+var lastFpsCheck = 0;
+var nominalFps = 30;
 function startHealthPoll(whichPc, dir) {
   var box = el("cast-health");
   if (!box || !whichPc) return;
   if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   box.classList.remove("hidden");
   var pcRef = whichPc;
+  lastFramesReceived = -1;
   healthTimer = setInterval(function () {
     var ice = "?", conn = "?", tinfo = "";
     try { ice = pcRef.iceConnectionState; } catch (e) {}
@@ -163,13 +171,60 @@ function startHealthPoll(whichPc, dir) {
     box.textContent = "ice:" + ice + " conn:" + conn + tinfo;
     try {
       pcRef.getStats().then(function (st) {
-        var bytes = -1;
+        var bytes = -1, w = 0, h = 0, fps = 0, fr = -1, fd = -1, jit = -1, codec = "";
         st.forEach(function (r) {
           if (r.kind !== "video") return;
-          if (dir === "in" && r.type === "inbound-rtp" && r.bytesReceived != null) bytes = r.bytesReceived;
-          if (dir === "out" && r.type === "outbound-rtp" && r.bytesSent != null) bytes = r.bytesSent;
+          var inbound = dir === "in" && r.type === "inbound-rtp";
+          var outbound = dir === "out" && r.type === "outbound-rtp";
+          if (!inbound && !outbound) return;
+          if (inbound && r.bytesReceived != null) bytes = r.bytesReceived;
+          if (outbound && r.bytesSent != null) bytes = r.bytesSent;
+          if (r.frameWidth) w = r.frameWidth;
+          if (r.frameHeight) h = r.frameHeight;
+          if (r.framesPerSecond) fps = r.framesPerSecond;
+          if (r.framesReceived != null) fr = r.framesReceived;
+          if (r.framesDropped != null) fd = r.framesDropped;
+          if (r.jitter != null) jit = r.jitter;
+          if (r.codecId) {
+            st.forEach(function (c) {
+              if (c.id === r.codecId && c.mimeType) codec = c.mimeType.replace("video/", "");
+            });
+          }
         });
-        if (bytes >= 0) box.textContent += " bytes:" + bytes;
+        // Fall back to the video element's intrinsic size when stats lack it.
+        if ((!w || !h) && dir === "in") {
+          try {
+            var vids = document.querySelectorAll("video");
+            for (var vi = 0; vi < vids.length; vi++) {
+              if (vids[vi].videoWidth) { w = vids[vi].videoWidth; h = vids[vi].videoHeight; break; }
+            }
+          } catch (e) {}
+        }
+        var parts = [];
+        if (bytes >= 0) parts.push("bytes:" + bytes);
+        if (w && h) parts.push(w + "x" + h);
+        if (fps) {
+          var drift = Math.abs(fps - nominalFps) / nominalFps;
+          parts.push("fps:" + fps.toFixed(0) + (drift > 0.10 ? " ⚠DRIFT" : ""));
+        }
+        if (fr >= 0) {
+          var dropPct = "";
+          if (fd >= 0 && fr + fd > 0) dropPct = " (drop " + (100 * fd / (fr + fd)).toFixed(1) + "%)";
+          parts.push("frames:" + fr + "/" + (fd >= 0 ? fd : "?") + dropPct);
+        }
+        if (jit >= 0) parts.push("jitter:" + (jit * 1000).toFixed(0) + "ms");
+        if (codec) parts.push(codec);
+        if (parts.length) box.textContent += " " + parts.join(" ");
+        // Stash the fingerprint for the session JSON export.
+        try {
+          window.__streamFingerprint = {
+            at: new Date().toISOString(),
+            width: w || null, height: h || null,
+            fps: fps || null, framesReceived: fr >= 0 ? fr : null,
+            framesDropped: fd >= 0 ? fd : null, jitterSec: jit >= 0 ? +jit.toFixed(4) : null,
+            codec: codec || null, bytes: bytes >= 0 ? bytes : null
+          };
+        } catch (e) {}
       }).catch(function () {});
     } catch (e) {}
   }, 2000);
