@@ -41,6 +41,7 @@ var CAST_BUILD = (function () {
 var BROKER_URL = "wss://broker.emqx.io:8084/mqtt";
 var SIGNAL_TOPIC_PREFIX = "stadium-slugger/cast/v1/";
 var link = null, republishTimer = null, pairTimeout = null, pairRetryTimer = null;
+var healthTimer = null;
 var manualStarted = false;
 
 // The laptop's code is permanent (survives refreshes), so a phone that's
@@ -129,7 +130,41 @@ function stopPairing() {
   if (republishTimer) { clearInterval(republishTimer); republishTimer = null; }
   if (pairTimeout) { clearTimeout(pairTimeout); pairTimeout = null; }
   if (pairRetryTimer) { clearTimeout(pairRetryTimer); pairRetryTimer = null; }
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
   if (link) { try { link.close(); } catch (e) {} link = null; }
+}
+
+// Connection-health readout: polls the peer connection every 2s and shows
+// ICE/connection state, track state, and actual RTP byte counters — so a
+// black video can be told apart from a dead handshake at a glance.
+function startHealthPoll(whichPc, dir) {
+  var box = el("cast-health");
+  if (!box || !whichPc) return;
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  box.classList.remove("hidden");
+  var pcRef = whichPc;
+  healthTimer = setInterval(function () {
+    var ice = "?", conn = "?", tinfo = "";
+    try { ice = pcRef.iceConnectionState; } catch (e) {}
+    try { conn = pcRef.connectionState; } catch (e) {}
+    try {
+      var rec = dir === "in" ? pcRef.getReceivers()[0] : pcRef.getSenders()[0];
+      var tr = rec && rec.track;
+      if (tr) tinfo = " track:" + tr.readyState + (tr.muted ? "(muted)" : "(live)");
+    } catch (e) {}
+    box.textContent = "ice:" + ice + " conn:" + conn + tinfo;
+    try {
+      pcRef.getStats().then(function (st) {
+        var bytes = -1;
+        st.forEach(function (r) {
+          if (r.kind !== "video") return;
+          if (dir === "in" && r.type === "inbound-rtp" && r.bytesReceived != null) bytes = r.bytesReceived;
+          if (dir === "out" && r.type === "outbound-rtp" && r.bytesSent != null) bytes = r.bytesSent;
+        });
+        if (bytes >= 0) box.textContent += " bytes:" + bytes;
+      }).catch(function () {});
+    } catch (e) {}
+  }, 2000);
 }
 
 function makePin() {
@@ -214,6 +249,7 @@ function startBroadcastPairing(pin) {
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
     stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
+    startHealthPoll(pc, "out");
     preferSingleCodec(pc, "video"); // one codec -> smaller offer
     return pc.createOffer().then(function (offer) {
       return pc.setLocalDescription(offer);
@@ -368,6 +404,7 @@ function watchPinFlow() {
     // (one per failed handshake) and eventually starve the browser.
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
+    startHealthPoll(pc, "in");
     // Dead-session recovery: if the phone goes away (refresh, tab killed),
     // drop this peer connection and rejoin the topic — the phone's next
     // broadcast re-pairs automatically instead of stranding on "connected".
