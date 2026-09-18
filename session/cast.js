@@ -220,6 +220,20 @@ function startBroadcastPairing(pin) {
     }).then(function () {
       var offerMsg = fullSdpMsg("offer", pc.localDescription.sdp);
       var answered = false;
+      // If the paired connection dies (laptop refreshed, network blip), go
+      // back to broadcasting a fresh offer — the mounted phone must never
+      // strand itself on a dead session.
+      pc.onconnectionstatechange = function () {
+        var st = "";
+        try { st = pc.connectionState; } catch (e) {}
+        if ((st === "failed" || st === "closed") && answered) {
+          answered = false;
+          try { pc.close(); } catch (e2) {}
+          pc = null;
+          setStatus("Connection lost — rebroadcasting…");
+          startBroadcastPairing(pin);
+        }
+      };
       setStatus("Pairing…");
       // A blipped connection must not strand the mounted phone: wait a few
       // seconds and rejoin the same topic. stopPairing() (panel close) clears
@@ -328,6 +342,21 @@ function watchPinFlow() {
     // (one per failed handshake) and eventually starve the browser.
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     pc = new RTCPeerConnection(RTC_CFG);
+    // Dead-session recovery: if the phone goes away (refresh, tab killed),
+    // drop this peer connection and rejoin the topic — the phone's next
+    // broadcast re-pairs automatically instead of stranding on "connected".
+    pc.onconnectionstatechange = function () {
+      var st = "";
+      try { st = pc.connectionState; } catch (e) {}
+      if (st === "failed" || st === "closed") {
+        connected = false; gotOffer = false;
+        try { pc.close(); } catch (e2) {}
+        pc = null;
+        stopPairing();
+        setStatus("Phone went away — listening for its broadcast…");
+        connect();
+      }
+    };
     pc.ontrack = function (ev) {
       var stream = ev.streams && ev.streams[0];
       if (stream && window.SessionApp && window.SessionApp.onRemoteStream) {
