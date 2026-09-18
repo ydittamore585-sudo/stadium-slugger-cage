@@ -3,8 +3,9 @@
  *
  * Pure static-page WebRTC. No signaling server: the offer/answer are
  * exchanged as QR codes (camera scan) with copy/paste text fallback.
- * Non-trickle ICE, host candidates only (same-WiFi LAN), so each side
- * is a single QR scan.
+ * Non-trickle ICE, host candidates only (same-WiFi LAN). The SDP is
+ * minified (one codec, no filler lines) and LZ-compressed so each side
+ * is a single easily-scannable QR code.
  *
  * Roles:
  *   Broadcast (phone):  camera -> RTCPeerConnection -> laptop
@@ -46,22 +47,77 @@ function closePanel() {
 
 /* ---------------- SDP helpers ---------------- */
 
-// Keep host candidates only: same-LAN, much smaller SDP for QR.
-function shrinkSdp(sdp) {
-  return sdp.split(/\r\n|\n/).filter(function (line) {
-    if (line.indexOf("a=candidate:") === 0) return / typ host /.test(line);
-    return true;
-  }).join("\r\n");
+// Strip the SDP to the essentials and compress it, so the whole handshake
+// fits in one easily-scannable QR code (a raw offer is several KB and the
+// QR library refuses it outright).
+//   - one payload type per m= section (first listed codec)
+//   - host ICE candidates only (same-WiFi LAN)
+//   - drop redundant/informational lines (ssrc, extmap, rtcp-fb, etc.)
+//   - LZ-compress the result before QR encoding
+function minifySdp(sdp) {
+  var out = [];
+  var keepPayload = null; // payload type kept for the current m= section
+  var lines = sdp.split(/\r\n|\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (!line) continue;
+    if (line.indexOf("m=") === 0) {
+      var parts = line.split(" ");
+      keepPayload = parts.length > 3 ? parts[3] : null;
+      out.push(parts.slice(0, 4).join(" ")); // single payload type
+      continue;
+    }
+    if (line.indexOf("a=candidate:") === 0) {
+      if (/ typ host /.test(line)) out.push(line); // LAN candidates only
+      continue;
+    }
+    if (/^a=(rtpmap|fmtp):/.test(line)) {
+      // keep codec description only for the chosen payload
+      if (keepPayload &&
+          (line.indexOf("a=rtpmap:" + keepPayload + " ") === 0 ||
+           line.indexOf("a=fmtp:" + keepPayload + " ") === 0)) out.push(line);
+      continue;
+    }
+    // informational / redundant lines: safe to drop for a direct LAN peer
+    if (/^a=(rtcp-fb|ssrc|ssrc-group|extmap|x-google-flag|ice-options|end-of-candidates|rtcp-rsize)/.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\r\n");
+}
+
+// Ask the browser to offer just one codec per kind before createOffer, so
+// the minified m= line matches what was actually negotiated.
+function preferSingleCodec(pc, kind) {
+  try {
+    var getCaps = window.RTCRtpSender && RTCRtpSender.getCapabilities;
+    var codecs = getCaps ? getCaps(kind).codecs || [] : [];
+    codecs = codecs.filter(function (c) { return c.mimeType.toLowerCase().indexOf(kind + "/") === 0; });
+    if (!codecs.length) return;
+    var chosen = codecs[0];
+    if (kind === "video") {
+      var vp8 = codecs.filter(function (c) { return /\/vp8$/i.test(c.mimeType); })[0];
+      if (vp8) chosen = vp8;
+    }
+    pc.getTransceivers().forEach(function (tr) {
+      if (tr.sender && tr.sender.track && tr.sender.track.kind === kind && tr.setCodecPreferences) {
+        tr.setCodecPreferences([chosen]);
+      }
+    });
+  } catch (e) { /* codec munging in minifySdp still covers it */ }
 }
 
 function encodeMsg(type, sdp) {
-  return JSON.stringify({ t: type, sdp: shrinkSdp(sdp) });
+  /* global LZString */
+  var small = minifySdp(sdp);
+  return JSON.stringify({ t: type, s: LZString.compressToBase64(small) });
 }
 
 function decodeMsg(text) {
   var o = JSON.parse(text);
-  if (!o || !o.sdp || (o.t !== "offer" && o.t !== "answer")) throw new Error("bad code");
-  return o;
+  if (!o || (o.t !== "offer" && o.t !== "answer")) throw new Error("bad code");
+  var sdp = o.s ? LZString.decompressFromBase64(o.s) : o.sdp; // o.sdp = legacy uncompressed
+  if (!sdp) throw new Error("bad code");
+  return { t: o.t, sdp: sdp };
 }
 
 function waitIceComplete(pc) {
@@ -166,6 +222,7 @@ function broadcastFlow() {
     setStatus("Creating broadcast offer…");
     pc = new RTCPeerConnection(RTC_CFG);
     stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
+    preferSingleCodec(pc, "video"); // one codec -> smaller offer -> smaller QR
     return pc.createOffer().then(function (offer) {
       return pc.setLocalDescription(offer);
     }).then(function () {
