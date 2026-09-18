@@ -116,6 +116,7 @@ proc.width = PROC_W; proc.height = PROC_H;
 var prevFrame = null;
 var swingCooldownUntil = 0;
 var pendingSwing = null; // { t0, ballTrack: [] }
+var wakeLock = null;
 
 profileInfoEl.textContent =
   "Profile: " + PROFILE.label + " (verified=" + PROFILE.verified + "), " +
@@ -563,6 +564,13 @@ function startSession() {
   swingLogEl.innerHTML = '<p class="empty">No swings yet. Take a cut.</p>';
   mSwings.textContent = "0"; mEV.textContent = "—"; mLA.textContent = "—";
 
+  // Wake lock: a phone running the session solo must not sleep mid-session.
+  try {
+    if (navigator.wakeLock) {
+      navigator.wakeLock.request("screen").then(function (wl) { wakeLock = wl; }).catch(function () {});
+    }
+  } catch (e) {}
+
   state.recording = true;
   statusEl.textContent = "● Live — watching for swings";
   statusEl.className = "status recording";
@@ -584,6 +592,7 @@ function startSession() {
 
 function stopSession() {
   state.recording = false;
+  if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
   statusEl.textContent = "Session ended";
   statusEl.className = "status idle";
   btnStop.classList.add("hidden");
