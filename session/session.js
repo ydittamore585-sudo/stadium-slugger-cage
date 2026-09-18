@@ -231,31 +231,60 @@ function frameMotion() {
 /* Ball tracking (post-swing).                                         */
 /* Looks for a small bright blob moving away from the plate region.    */
 /* ------------------------------------------------------------------ */
-var BALL_TRACK_FRAMES = 12;
+var BALL_TRACK_FRAMES = 24;      // unique frames (~0.8 s at 30 fps of ball flight)
+var BALL_TRACK_TIMEOUT_MS = 3000;
 var BALL_MIN_DISPLACEMENT_PX = 8; // full-res px over the track
 
+// Cheap duplicate-frame detector: the phone stream often runs below
+// 30 fps, and three-frame differencing on duplicate frames sees zero
+// motion — which silently kills the ball search. Sampled luma checksum.
+function frameHash(img) {
+  var d = img.data, h = 0;
+  var step = Math.max(4, Math.floor(d.length / 256 / 4) * 4);
+  for (var i = 0; i < d.length; i += step) h = (h * 31 + d[i]) | 0;
+  return h;
+}
+
 function trackBall(seed) {
-  // Capture full-res frames for BALL_TRACK_FRAMES.
+  // Capture UNIQUE frames for up to ~0.8 s of real ball flight.
+  // requestVideoFrameCallback grabs on actual new presented frames;
+  // the setTimeout fallback skips duplicates via frameHash.
   var cap = document.createElement("canvas");
   cap.width = video.videoWidth; cap.height = video.videoHeight;
   var cctx = cap.getContext("2d", { willReadFrequently: true });
-  var frames = [];
+  var frames = [], times = [];
   return new Promise(function (resolve) {
-    var n = 0;
-    var iv = setInterval(function () {
+    var t0 = performance.now(), done = false;
+    var lastHash = 0, haveHash = false, frozen = 0;
+    function finish() {
+      if (done) return;
+      done = true;
+      resolve(detectBallTrail(frames, cap.width, cap.height, seed, times));
+    }
+    // Watchdog: rVFC stops firing if the stream freezes, so the timeout
+    // must not depend on grab() being called again.
+    setTimeout(finish, BALL_TRACK_TIMEOUT_MS);
+    function grab() {
+      if (done) return;
       cctx.drawImage(video, 0, 0, cap.width, cap.height);
-      frames.push(cctx.getImageData(0, 0, cap.width, cap.height));
-      if (++n >= BALL_TRACK_FRAMES) {
-        clearInterval(iv);
-        resolve(detectBallTrail(frames, cap.width, cap.height, seed));
-      }
-    }, 1000 / 30);
+      var img = cctx.getImageData(0, 0, cap.width, cap.height);
+      var h = frameHash(img);
+      if (!haveHash || h !== lastHash) {
+        haveHash = true; lastHash = h; frozen = 0;
+        frames.push(img);
+        times.push((performance.now() - t0) / 1000);
+      } else if (++frozen > 60) { finish(); return; } // stream frozen mid-track
+      if (frames.length >= BALL_TRACK_FRAMES) { finish(); return; }
+      if (typeof video.requestVideoFrameCallback === "function") video.requestVideoFrameCallback(function () { grab(); });
+      else setTimeout(grab, 34);
+    }
+    grab();
   });
 }
 
 var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
 
-function detectBallTrail(frames, W, H, seed) {
+function detectBallTrail(frames, W, H, seed, times) {
   // Three-frame differencing + blob check.
   // motion(x,y,t) = min(|I(t)-I(t-1)|, |I(t+1)-I(t)|): a pixel must differ
   // from BOTH neighbors, which rejects single-frame flashes (sensor noise,
@@ -310,7 +339,7 @@ function detectBallTrail(frames, W, H, seed) {
         if (score > bestScore) { bestScore = score; best = { x: x, y: y }; }
       }
     }
-    if (best && bestScore > BALL_SCORE_GATE) trail.push({ u: best.x, v: best.y, t: f / 30 });
+    if (best && bestScore > BALL_SCORE_GATE) trail.push({ u: best.x, v: best.y, t: (times && times[f] != null) ? times[f] : f / 30 });
   }
   // Quality gates.
   if (trail.length < 5) return null;
