@@ -149,7 +149,15 @@ async function serveStatic(req, res) {
 async function handleApi(req, res) {
   const urlPath = req.url.split('?')[0];
   noCache(res);
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+    });
+    res.end();
+    return;
+  }
 
   if (req.method === 'GET' && urlPath === '/api/health') {
     sendJson(res, 200, { ok: true, bridge: 'gopro-bridge', version: VERSION, goproIp: GOPRO_IP });

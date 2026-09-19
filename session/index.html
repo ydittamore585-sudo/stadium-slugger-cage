@@ -106,6 +106,9 @@
     <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
     <button id="btn-mark" class="big hidden" title="Log a swing manually — ground truth for detector tuning">✋ Mark Swing</button>
   </div>
+  <div id="gopro-connect-row">
+    <button id="btn-gopro-connect" title="Connect to the laptop GoPro bridge (node bridge.mjs on the GoPro WiFi)">📷 Connect GoPro</button>
+  </div>
   <div id="gopro-panel" class="hidden" title="Shown only when the laptop GoPro bridge is reachable on this network">
     <span id="gopro-dot" class="dot"></span>
     <span id="gopro-status">GoPro: …</span>
@@ -147,12 +150,12 @@
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
 <script src="vendor/lz-string.min.js?v=20260917c"></script>
 <script src="mqtt.js?v=20260917d"></script>
-<script src="cast.js?v=20260919a"></script>
+<script src="cast.js?v=20260919b"></script>
 <script src="calib.js?v=20260918i"></script>
 <script src="webm-duration.js?v=20260918h"></script>
 <script src="swing-detect.js?v=20260918j"></script>
 <script src="clip-assemble.js?v=20260918j"></script>
 <script src="session.js?v=20260918j"></script>
-<script src="gopro-bridge.js?v=20260919a"></script>
+<script src="gopro-bridge.js?v=20260919b"></script>
 </body>
 </html>

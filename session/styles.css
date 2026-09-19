@@ -34,6 +34,8 @@ button.big {
 #btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
 #gopro-panel { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2c3a5e; border-radius: 12px; background: rgba(255,255,255,0.04); }
 #gopro-panel button.big { padding: 12px; font-size: 1rem; }
+#gopro-connect-row { margin: 0 0 14px; }
+#btn-gopro-connect { width: 100%; padding: 12px; font-size: 1rem; font-weight: 700; border: 1px solid #2c3a5e; border-radius: 12px; background: #232c47; color: #cfd8f3; cursor: pointer; }
 #btn-gopro-start { background: #1f7a3a; color: #fff; }
 #btn-gopro-start:disabled { background: #2a3350; color: #777; }
 #btn-gopro-stop { background: #a02a2a; color: #fff; }
