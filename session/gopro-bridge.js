@@ -203,10 +203,11 @@ var BLE_CMD = "b5f90072-aa8d-11e3-9046-0002a5d5c51b";
 var BLE_CMD_RESP = "b5f90073-aa8d-11e3-9046-0002a5d5c51b";
 var BLE_SHUTTER_START = [0x03, 0x01, 0x01, 0x01];
 var BLE_SHUTTER_STOP = [0x03, 0x01, 0x01, 0x00];
-var BLE_KEEPALIVE = [0x02, 0x01, 0x42];
-var BLE_KEEPALIVE_MS = 3000;
-
-var bleDevice = null, bleCmdChar = null, bleKeepTimer = null, bleName = "";
+// NOTE: no keep-alive. An earlier build sent 02 01 42 every 3 s as a
+// keep-alive; the HERO8 read it as a shutter toggle and recorded endless
+// 3-second clips. The BLE connection stays up on its own; if a future
+// camera drops idle connections we will revisit with verified bytes.
+var bleDevice = null, bleCmdChar = null, bleName = "";
 var bleRecording = null; // null = unknown; camera screen is ground truth
 
 function bleSupported() {
@@ -226,7 +227,6 @@ function setBleUI(on) {
 }
 
 function bleTeardown() {
-  if (bleKeepTimer) { clearInterval(bleKeepTimer); bleKeepTimer = null; }
   if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
     try { bleDevice.gatt.disconnect(); } catch (e) { /* already gone */ }
   }
@@ -328,9 +328,6 @@ async function bleFinishPair(devicePromise) {
     bleCmdChar = cmdChar;
     bleName = device.name || "GoPro";
     bleRecording = null;
-    bleKeepTimer = setInterval(function () {
-      if (bleCmdChar) bleWrite(BLE_KEEPALIVE).catch(function () { /* drop will fire */ });
-    }, BLE_KEEPALIVE_MS);
     if (btnStart) btnStart.onclick = function () { bleShutter(true); };
     if (btnStop) btnStop.onclick = function () { bleShutter(false); };
     setBleUI(true);
