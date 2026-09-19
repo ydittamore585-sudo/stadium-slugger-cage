@@ -183,18 +183,26 @@ function initCamera() {
 // (hotFrac is a fraction of ROI pixels).
 var SWING_ROI = { x: 0, y: 0.25, w: 1.0, h: 0.55 };
 var HOT_PX_DIFF = 14;        // |luma diff| for a pixel to count as moving hard
-var QUIET_FRAC = 0.006;      // below this the scene counts as quiet
-var QUIET_FRAMES = 8;        // quiet frames (~0.5 s) needed to re-arm
 var BIAS_REJECT = 0.6;       // biasRatio above this = exposure shift: ignore
 var SENS_LEVELS = {
-  calm:      { hotFrac: 0.065, frames: 4 },
-  normal:    { hotFrac: 0.037, frames: 3 },
-  sensitive: { hotFrac: 0.020, frames: 2 }
+  calm:      { spikeMin: 0.055, promMin: 0.040, riseMin: 0.030 },
+  normal:    { spikeMin: 0.035, promMin: 0.025, riseMin: 0.020 },
+  sensitive: { spikeMin: 0.020, promMin: 0.015, riseMin: 0.012 }
 };
 var motionLevel = "normal";
-var consecHot = 0, quietFrames = 0, armed = true;
+var swingDetector = null; // created in startSession/reset
+var pendingSpike = null;  // {spike, ballTrackPromise} — awaiting validation
 var lastHotFrac = 0; // latest motion reading, for manual-mark detector snapshots
 var motionSeed = null; // {x, y (0-1 frame-normalized), t} — freshest motion centroid
+
+function createDetector() {
+  var s = SENS_LEVELS[motionLevel] || SENS_LEVELS.normal;
+  swingDetector = createSwingDetector({
+    spikeMin: s.spikeMin, promMin: s.promMin, riseMin: s.riseMin,
+    riseFrames: 3, preMs: 1000, postMs: 600, jumpMax: 0.20, cooldownMs: 3000
+  });
+  pendingSpike = null;
+}
 
 function frameMotion() {
   pctx.drawImage(video, 0, 0, PROC_W, PROC_H);
@@ -657,14 +665,45 @@ document.getElementById("btn-sound").addEventListener("click", function (ev) {
 });
 
 /* ------------------------------------------------------------------ */
-/* Swing pipeline                                                      */
+/* Swing pipeline: two-stage recognition                               */
+/*  1. SPIKE (immediate): motion signature starts. Preserve pre-roll   */
+/*     and start ball tracking NOW — the ball is already flying.       */
+/*  2. VALIDATE (~600ms later): prominence confirms a real swing.       */
+/*     Only then: beep, log, assemble clip.                            */
+/*  If validation rejects, the provisional work is discarded silently. */
 /* ------------------------------------------------------------------ */
-function onSwingDetected() {
-  logSwing(false);
+function onSpike(spike) {
+  // Preserve the pre-roll window immediately (time-based, not count-based).
+  var tSpike = spike.t;
+  var preStart = tSpike - CLIP_PREROLL_MS;
+  var preChunks = [];
+  for (var i = 0; i < clipRing.length; i++) {
+    if (clipRing[i].t >= preStart && clipRing[i].t <= tSpike) preChunks.push(clipRing[i]);
+  }
+  // Start ball tracking NOW — don't wait for validation.
+  var ballPromise = null;
+  try {
+    if (motionSeed) ballPromise = trackBall(motionSeed);
+  } catch (e) { ballPromise = null; }
+  pendingSpike = { spike: spike, preChunks: preChunks, ballPromise: ballPromise, tSpike: tSpike };
+}
+
+function onSpikeRejected(ps) {
+  // Validation said "not a swing" (waggle, getting up, walking).
+  // Discard the provisional ball track; keep the pre-roll chunks in the
+  // ring (they're still valid history for the next spike).
+  if (ps.ballPromise && ps.ballPromise.cancel) {
+    try { ps.ballPromise.cancel(); } catch (e) {}
+  }
+  // No beep, no log, no clip. Silent by design.
+}
+
+function onSwingValidated(ps) {
+  logSwing(false, ps);
 }
 
 function markSwingManual() {
-  logSwing(true);
+  logSwing(true, null);
 }
 
 // Single funnel for auto-detected and manually marked swings.
@@ -672,8 +711,10 @@ function markSwingManual() {
 // manual mark is never suppressed by a nearby auto event, nor does it
 // suppress auto events). Auto and manual events within ±1.5 s are linked
 // by ID so detector recall can be measured honestly afterward.
+// ps: pending spike {spike, preChunks, ballPromise, tSpike} for auto;
+//     null for manual (starts its own ball track + clip).
 var RECALL_LINK_MS = 1500;
-function logSwing(manual) {
+function logSwing(manual, ps) {
   var now = Date.now();
   if (!manual) {
     if (now < swingCooldownUntil) return;
@@ -683,7 +724,7 @@ function logSwing(manual) {
   mSwings.textContent = state.swingCount;
   drawSwingMarker();
   beep(880, 150);
-  captureSwingClip(state.swingCount);
+  captureSwingClip(state.swingCount, ps);
 
   var swingEntry = {
     id: state.swingCount,
@@ -691,10 +732,11 @@ function logSwing(manual) {
     sessionTimeSec: (now - state.sessionStart) / 1000,
     manual: !!manual,
     // Detector state at mark time — for later recall comparison.
-    detector: manual ? {
-      consecHot: consecHot, armed: armed,
-      hotFrac: lastHotFrac, motionLevel: motionLevel
-    } : null
+    detector: {
+      hotFrac: lastHotFrac, motionLevel: motionLevel,
+      spikeT: ps ? ps.spike.t : null,
+      validated: !manual
+    }
   };
 
   // Link to counterpart events within ±1.5 s for recall measurement.
@@ -712,14 +754,18 @@ function logSwing(manual) {
   }
   if (linked.length) swingEntry.linkedIds = linked;
 
-  // Seed the ball search from the motion centroid when it is fresh —
-  // the swing ROI tells us where the action was. Stale (> 5 s) seeds fall
-  // back to the full search region inside detectBallTrail.
+  // Ball track: for auto swings, use the track that started at spike time
+  // (the ball is already 600ms into flight). For manual, start one now.
   var seed = (motionSeed && now - motionSeed.t < 5000) ? motionSeed : null;
   swingEntry.motionSeed = seed ? { x: +seed.x.toFixed(3), y: +seed.y.toFixed(3) } : null;
 
-  // Track the ball, then analyze.
-  trackBall(seed).then(function (trail) {
+  var ballPromise;
+  if (ps && ps.ballPromise) {
+    ballPromise = ps.ballPromise;
+  } else {
+    try { ballPromise = trackBall(seed); } catch (e) { ballPromise = Promise.resolve(null); }
+  }
+  ballPromise.then(function (trail) {
     var result = analyzeSwing(trail);
     swingEntry.result = result;
     state.swings.push(swingEntry);
@@ -828,9 +874,9 @@ function updateMotionMeter(hotFrac) {
     if (!motionFillEl) return;
   }
   var s = SENS_LEVELS[motionLevel];
-  // Threshold line sits at 50%; the bar turns green past it.
-  motionFillEl.style.width = Math.min(100, (hotFrac / (s.hotFrac * 2)) * 100).toFixed(1) + "%";
-  motionFillEl.classList.toggle("hot", hotFrac >= s.hotFrac);
+  // Threshold line sits at 50%; the bar turns green past the spike floor.
+  motionFillEl.style.width = Math.min(100, (hotFrac / (s.spikeMin * 2)) * 100).toFixed(1) + "%";
+  motionFillEl.classList.toggle("hot", hotFrac >= s.spikeMin);
 }
 
 function loop(ts) {
@@ -853,29 +899,38 @@ function loop(ts) {
       // Step 9: stream lost — the frame is frozen, so any "motion" here
       // would be phantom swings. The meter above keeps updating; the
       // detector is gated until the feed recovers.
-      consecHot = 0;
       return;
     }
-    var s = SENS_LEVELS[motionLevel];
-    var candidate = m.hotFrac >= s.hotFrac && m.biasRatio < BIAS_REJECT;
-    if (candidate) consecHot++; else consecHot = 0;
-    // Re-arm only after the scene goes quiet: one long motion event
-    // can't log a burst of phantom swings.
-    if (!armed) {
-      if (m.hotFrac < QUIET_FRAC) {
-        if (++quietFrames >= QUIET_FRAMES) { armed = true; quietFrames = 0; }
-      } else quietFrames = 0;
+    if (!swingDetector) createDetector();
+    // Feed the prominence detector: h = motion level, cx/cy = centroid.
+    // Exposure-shift guard: biasRatio near 1 means global illumination
+    // change, not motion — feed zero so it can't spike.
+    var h = m.biasRatio < BIAS_REJECT ? m.hotFrac : 0;
+    var cx = m.hotX !== null ? m.hotX / PROC_W : null;
+    var cy = m.hotY !== null ? m.hotY / PROC_H : null;
+    var spike = null;
+    try {
+      spike = swingDetector.push({ t: Date.now(), h: h, cx: cx, cy: cy });
+    } catch (e) { spike = null; }
+    if (spike && !pendingSpike) {
+      onSpike(spike);
     }
-    if (armed && consecHot >= s.frames) {
-      armed = false; consecHot = 0; quietFrames = 0;
-      onSwingDetected();
+    // Validate the pending spike after postMs of data (~600ms).
+    if (pendingSpike) {
+      var v = null;
+      try { v = swingDetector.validate(pendingSpike.spike); } catch (e) {}
+      if (v && v.status !== "pending") {
+        var ps = pendingSpike;
+        pendingSpike = null;
+        if (v.valid) onSwingValidated(ps); else onSpikeRejected(ps);
+      }
     }
   } catch (e) { /* keep the session alive */ }
 }
 
 document.getElementById("motion-sens").addEventListener("change", function (ev) {
   motionLevel = ev.target.value in SENS_LEVELS ? ev.target.value : "normal";
-  consecHot = 0;
+  createDetector(); // rebuild with new sensitivity
 });
 
 /* ------------------------------------------------------------------ */
@@ -889,10 +944,14 @@ var downloadedClipIds = {}; // ids already saved to the folder
 function attachClipPlayer(swingId, blob) {
   var url = URL.createObjectURL(blob);
   // 1) Drop it in the folder immediately (Downloads).
+  // Session-stamped filename: swing-20260918-193022-03.webm (no parens/
+  // spaces, so the browser never renames with " (1)").
   try {
     var a = document.createElement("a");
     a.href = url;
-    a.download = "swing-" + swingId + ".webm";
+    a.download = (typeof clipFileName === "function")
+      ? clipFileName(state.sessionStart, swingId)
+      : "swing-" + swingId + ".webm";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -946,7 +1005,7 @@ function startSession() {
   document.getElementById("camera-hint").style.display = "none";
   mRec.textContent = clipToggle.checked ? "CLIPS" : "OFF";
   prevFrame = null;
-  consecHot = 0; quietFrames = 0; armed = true;
+  createDetector(); // fresh prominence detector for the session
   // Prime audio on the user's click so swing beeps aren't blocked later.
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -982,13 +1041,16 @@ function stopSession() {
 /* ------------------------------------------------------------------ */
 var clipRing = [];           // Blobs, oldest first
 var CLIP_CHUNK_MS = 500;
-var CLIP_PREROLL_CHUNKS = 6; // 3 s pre-roll at 500 ms timeslices
-var CLIP_RING_MAX = 16;      // ~8 s window; bounds memory (~4 MB at 4 Mbps)
-var CLIP_POSTROLL_MS = 2000;
+var CLIP_CHUNK_MS = 500; // MediaRecorder timeslice
+var CLIP_PREROLL_MS = 4000; // 4 s pre-roll: set, feet, step, load
+var CLIP_POSTROLL_MS = 2000; // 2 s post-roll: follow-through
+var CLIP_RING_MAX = 24;      // ~12 s window; bounds memory (~6 MB at 4 Mbps)
+var CLIP_MIN_MS = 1500;      // reject "just a picture" clips
 var sessionRecorder = null;
 var sessionRecorderStream = null;
-var clipHeaderChunk = null;  // first chunk = EBML header; saved separately so
-                             // mid-ring clips can be prepended into playable files
+var clipHeaderChunk = null;  // first chunk = EBML header (Uint8Array); saved
+                             // separately so mid-ring clips get a valid init
+var clipRing = [];           // [{blob, t}] — t = Date.now() at arrival
 
 function pickSupportedMime() {
   var cands = [
@@ -1019,8 +1081,15 @@ function startClipRing() {
     clipHeaderChunk = null;
     sessionRecorder.ondataavailable = function (e) {
       if (e.data && e.data.size) {
-        if (!clipHeaderChunk) clipHeaderChunk = e.data; // first chunk has the EBML header
-        clipRing.push(e.data);
+        var entry = { blob: e.data, t: Date.now() };
+        if (!clipHeaderChunk) {
+          // First chunk has the EBML header — stash its bytes separately.
+          // (Read once; the ring keeps the Blob for potential reuse.)
+          var rd = new FileReader();
+          rd.onload = function () { clipHeaderChunk = new Uint8Array(rd.result); };
+          rd.readAsArrayBuffer(e.data);
+        }
+        clipRing.push(entry);
         while (clipRing.length > CLIP_RING_MAX) clipRing.shift();
       }
     };
@@ -1048,43 +1117,53 @@ function ensureClipRing() {
   if (state.stream && state.stream !== sessionRecorderStream) startClipRing();
 }
 
-// Capture a ~5 s clip (3 s before + 2 s after the trigger) when the toggle is on.
-function captureSwingClip(swingId) {
+// Capture a coaching clip: 4 s pre-roll (set, feet, step, load) + 2 s
+// post-roll (follow-through), assembled with structural verification.
+// ps: pending spike for auto (has preChunks); null for manual.
+function captureSwingClip(swingId, ps) {
   if (!clipToggle.checked) return;
   ensureClipRing();
   if (!sessionRecorder || sessionRecorder.state === "inactive") return;
-  var pre = clipRing.slice(-CLIP_PREROLL_CHUNKS); // refs — safe against later shifts
-  var lastPre = clipRing.length ? clipRing[clipRing.length - 1] : null;
-  var tPre = Date.now();
+  if (!clipHeaderChunk || !clipHeaderChunk.length) return; // no header, no clip
+  var tTrigger = ps ? ps.tSpike : Date.now();
+  // Wait for post-roll to accumulate, then assemble.
   setTimeout(function () {
     try {
-      var post = [];
-      if (lastPre) {
-        var idx = clipRing.lastIndexOf(lastPre);
-        if (idx >= 0) post = clipRing.slice(idx + 1);
-      } else {
-        post = clipRing.slice(0);
+      // Select chunks by TIME, not count. Pre-chunks were preserved at
+      // spike time; post-chunks are everything since the trigger.
+      var t0 = tTrigger - CLIP_PREROLL_MS, t1 = tTrigger + CLIP_POSTROLL_MS;
+      var sel = [];
+      for (var i = 0; i < clipRing.length; i++) {
+        var c = clipRing[i];
+        if (c.t >= t0 && c.t <= t1) sel.push(c);
       }
-      var chunks = pre.concat(post);
-      if (!chunks.length) return;
-      // Mid-ring slices lack the EBML header — prepend the saved header
-      // chunk so the clip is a playable file. (If the slice already starts
-      // with the header, don't duplicate it.)
-      if (clipHeaderChunk && chunks[0] !== clipHeaderChunk) {
-        chunks.unshift(clipHeaderChunk);
-      }
-      var blob = new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "video/webm" });
-      var durationMs = Date.now() - tPre;
-      // Stamp the real duration into the WebM header so players show a
-      // length and can seek. fixWebmDuration is fail-safe: on any parse
-      // problem it resolves with the original blob.
-      var fix = (typeof fixWebmDuration === "function")
-        ? fixWebmDuration(blob, durationMs)
-        : Promise.resolve(blob);
-      fix.then(function (fixed) {
-        swingClips.push({ id: swingId, blob: fixed });
-        attachClipPlayer(swingId, fixed);
+      if (!sel.length) return;
+      // Convert Blobs to Uint8Arrays for the assembler.
+      var pending = sel.length, bufs = new Array(sel.length), failed = false;
+      sel.forEach(function (c, idx) {
+        var rd = new FileReader();
+        rd.onload = function () {
+          bufs[idx] = { bytes: new Uint8Array(rd.result), t: c.t };
+          if (--pending === 0 && !failed) assemble();
+        };
+        rd.onerror = function () { failed = true; };
+        rd.readAsArrayBuffer(c.blob);
       });
+      function assemble() {
+        try {
+          var clip = assembleClip(clipHeaderChunk, bufs, tTrigger,
+            CLIP_PREROLL_MS, CLIP_POSTROLL_MS, CLIP_MIN_MS);
+          if (!clip) return; // fail closed: no corrupt/still clips saved
+          var blob = new Blob([clip.data], { type: "video/webm" });
+          var fix = (typeof fixWebmDuration === "function")
+            ? fixWebmDuration(blob, clip.durationMs)
+            : Promise.resolve(blob);
+          fix.then(function (fixed) {
+            swingClips.push({ id: swingId, blob: fixed, durationMs: clip.durationMs });
+            attachClipPlayer(swingId, fixed);
+          });
+        } catch (e) { /* clips are optional; never break the session */ }
+      }
     } catch (e) { /* clips are optional; never break the session */ }
   }, CLIP_POSTROLL_MS);
 }
@@ -1139,7 +1218,9 @@ function downloadSession() {
     if (downloadedClipIds[c.id]) return;
     var a = document.createElement("a");
     a.href = URL.createObjectURL(c.blob);
-    a.download = "swing-" + c.id + ".webm";
+    a.download = (typeof clipFileName === "function")
+      ? clipFileName(state.sessionStart, c.id)
+      : "swing-" + c.id + ".webm";
     a.click();
   });
 }
@@ -1247,7 +1328,7 @@ window.SessionApp.onRemoteStream = function (stream) {
       state.streamOK = false;
       state.gapStart = (Date.now() - state.sessionStart) / 1000;
     }
-    armed = false;
+    // Detector gated by streamOK in loop(); nothing to disarm.
   };
   window.SessionApp.streamLive = function () {
     if (!state.streamOK && state.gapStart) {

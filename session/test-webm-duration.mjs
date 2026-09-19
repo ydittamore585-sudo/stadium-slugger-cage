@@ -1,6 +1,6 @@
 // Regression test for the WebM duration repair.
-// Fixture: a real Chrome MediaRecorder init segment captured headless
-// (canvas stream, 500 ms timeslices) — the same shape the session's clip
+// Fixture: a real Chrome MediaRecorder init segment from a field clip
+// (vendored in test-fixtures/) — the same shape the session's clip
 // ring produces. Verifies:
 //   1. patchWebmDuration inserts a Duration element into Info.
 //   2. The Duration value reads back correctly (ms, float64).
@@ -9,6 +9,8 @@
 //   5. Garbage input fails safe (null -> caller keeps the original blob).
 import { readFileSync } from "fs";
 import { createRequire } from "module";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 const require = createRequire(import.meta.url);
 const { patchWebmDuration } = require("./webm-duration.js");
 
@@ -18,9 +20,8 @@ function ok(cond, name) {
   else { fail++; console.log("  NOT OK - " + name); }
 }
 
-const raw = readFileSync("/tmp/mr_result.txt", "utf8");
-const payload = JSON.parse(raw.replace(/^RESULT:/, ""));
-const init = new Uint8Array(Buffer.from(payload.initB64, "base64"));
+const here = dirname(fileURLToPath(import.meta.url));
+const init = new Uint8Array(readFileSync(join(here, "test-fixtures", "webm-init-segment.bin")));
 ok(init.length > 100, "fixture init segment loaded (" + init.length + " bytes)");
 
 // --- tiny EBML reader for assertions --------------------------------
