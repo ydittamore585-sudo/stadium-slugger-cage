@@ -32,6 +32,17 @@ button.big {
 #btn-start:disabled { background: #2a3350; color: #777; }
 #btn-stop { background: #a02a2a; color: #fff; }
 #btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+#gopro-panel { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2c3a5e; border-radius: 12px; background: rgba(255,255,255,0.04); }
+#gopro-panel button.big { padding: 12px; font-size: 1rem; }
+#btn-gopro-start { background: #1f7a3a; color: #fff; }
+#btn-gopro-start:disabled { background: #2a3350; color: #777; }
+#btn-gopro-stop { background: #a02a2a; color: #fff; }
+#btn-gopro-stop:disabled { background: #2a3350; color: #777; }
+#gopro-status { font-size: 0.85rem; color: #cdd8ee; white-space: nowrap; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #555; flex: none; }
+.dot-rec { background: #e5484d; box-shadow: 0 0 8px #e5484d; }
+.dot-idle { background: #3a7a3a; }
+.dot-down { background: #a02a2a; }
 #build-bar { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid #232c47; }
 #build-tag { font-size: 0.75rem; color: #8a9bbd; font-family: monospace; }
 #btn-refresh { background: #232c47; color: #cfd8f3; border: 1px solid #34406a; border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
