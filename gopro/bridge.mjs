@@ -41,7 +41,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);                    // stadium-slugger-cage/
 const GOPRO_IP = process.env.GOPRO_IP || '10.5.5.9';
 const PORT = parseInt(process.env.PORT || '8090', 10);
-const VERSION = '20260919a';
+const VERSION = '20260919c';
 const CAM_TIMEOUT_MS = 5000;
 
 // Static roots exposed by the bridge. The session app lives at /session/,
