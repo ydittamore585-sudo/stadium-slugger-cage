@@ -35,6 +35,7 @@ button.big {
 #gopro-panel { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2c3a5e; border-radius: 12px; background: rgba(255,255,255,0.04); }
 #gopro-panel button.big { padding: 12px; font-size: 1rem; }
 #gopro-connect-row { margin: 0 0 14px; display: flex; gap: 10px; }
+#gopro-hint { font-size: 12px; opacity: 0.6; margin: -8px 0 14px; }
 #btn-gopro-connect, #btn-gopro-ble { flex: 1; padding: 12px; font-size: 1rem; font-weight: 700; border: 1px solid #2c3a5e; border-radius: 12px; background: #232c47; color: #cfd8f3; cursor: pointer; }
 #btn-gopro-ble:disabled { opacity: 0.45; cursor: default; }
 #btn-gopro-start { background: #1f7a3a; color: #fff; }

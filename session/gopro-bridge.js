@@ -276,25 +276,38 @@ async function bleShutter(start) {
   }
 }
 
-async function bleConnect() {
+function bleToggle() {
+  if (transport === "ble" && bleDevice) {
+    bleOnDrop();
+    return;
+  }
   if (!bleSupported()) {
     alert("This browser can't do Bluetooth.\nOpen this page in Chrome, Edge, or Opera (phone or laptop).");
     return;
   }
-  var ok = confirm(
-    "Pair with the GoPro over Bluetooth.\n\n" +
-    "FIRST: disconnect the Quik app from the camera — the camera takes\n" +
-    "only ONE Bluetooth connection at a time (force-stop Quik, or\n" +
-    "disconnect the camera inside the app).\n\n" +
-    "Then pick your camera in the pairing list, and approve any\n" +
-    "prompt on the camera screen.");
-  if (!ok) return;
-  if (btnBle) { btnBle.disabled = true; btnBle.textContent = "🔵 Pairing…"; }
+  // requestDevice MUST be called synchronously inside the click's user
+  // gesture — no confirm()/await before it, or the browser rejects it with
+  // "Must be handling a user gesture to show a permission request".
+  // The Quik-disconnect reminder lives as visible text under the button
+  // instead of a blocking confirm() for exactly this reason.
+  var devicePromise;
   try {
-    var device = await navigator.bluetooth.requestDevice({
+    devicePromise = navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SVC] }],
       optionalServices: [BLE_SVC]
     });
+  } catch (e) {
+    alert("Bluetooth connect failed: " + (e.message || e) +
+      "\n\nMake sure Quik is disconnected and the camera is nearby.");
+    return;
+  }
+  if (btnBle) { btnBle.disabled = true; btnBle.textContent = "🔵 Pairing…"; }
+  bleFinishPair(devicePromise);
+}
+
+async function bleFinishPair(devicePromise) {
+  try {
+    var device = await devicePromise;
     device.addEventListener("gattserverdisconnected", bleOnDrop);
     var server = await device.gatt.connect();
     var service = await server.getPrimaryService(BLE_SVC);
@@ -333,14 +346,6 @@ async function bleConnect() {
     }
   } finally {
     if (btnBle) btnBle.disabled = false;
-  }
-}
-
-function bleToggle() {
-  if (transport === "ble" && bleDevice) {
-    bleOnDrop();
-  } else {
-    bleConnect();
   }
 }
 
