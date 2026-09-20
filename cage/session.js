@@ -85,11 +85,17 @@ function applyH(H, u, v) {
 var video = document.getElementById("cam");
 var overlay = document.getElementById("overlay");
 var octx = overlay.getContext("2d");
+// Camera-live check: the swing detector runs automatically whenever the
+// camera feed is actually delivering frames. Saving (state.recording) is
+// a separate user choice — it only controls whether swings are logged.
+function cameraLive() {
+  return !!(video.srcObject && video.readyState >= 2);
+}
 var btnStart = document.getElementById("btn-start");
 var btnStop = document.getElementById("btn-stop");
 var btnMark = document.getElementById("btn-mark");
 if (btnMark) btnMark.addEventListener("click", function () {
-  if (state.recording) markSwingManual();
+  if (cameraLive()) markSwingManual();
 });
 // CageCast TV display — App ID from localStorage (set after Cast SDK registration)
 var btnCast = document.getElementById("btn-cast");
@@ -100,7 +106,7 @@ if (window.CageCast && btnCast) {
     appId: castAppId || '62FE612A',
     button: btnCast,
     onStateChange: function(connected) {
-      if (connected) CageCast.session(state.recording ? 'live' : 'idle');
+      if (connected) CageCast.session(cameraLive() ? 'live' : 'idle');
     }
   });
 }
@@ -724,6 +730,10 @@ function markSwingManual() {
 // manual mark is never suppressed by a nearby auto event, nor does it
 // suppress auto events). Auto and manual events within ±1.5 s are linked
 // by ID so detector recall can be measured honestly afterward.
+// Detection is automatic (camera live = detector on). Saving is the user's
+// choice: only when state.recording is true are swings logged to the
+// session, clips captured, and recall links built. The TV always gets
+// tracked swings.
 // ps: pending spike {spike, preChunks, ballPromise, tSpike} for auto;
 //     null for manual (starts its own ball track + clip).
 var RECALL_LINK_MS = 1500;
@@ -733,44 +743,59 @@ function logSwing(manual, ps) {
     if (now < swingCooldownUntil) return;
     swingCooldownUntil = now + COOLDOWN_MS;
   }
+  // Live counter always increments — the TV shows every detected swing.
   state.swingCount++;
   mSwings.textContent = state.swingCount;
   drawSwingMarker();
   beep(880, 150);
-  captureSwingClip(state.swingCount, ps);
 
-  var swingEntry = {
-    id: state.swingCount,
-    time: new Date().toISOString(),
-    sessionTimeSec: (now - state.sessionStart) / 1000,
-    manual: !!manual,
-    // Detector state at mark time — for later recall comparison.
-    detector: {
-      hotFrac: lastHotFrac, motionLevel: motionLevel,
-      spikeT: ps ? ps.spike.t : null,
-      validated: !manual
-    }
-  };
-
-  // Link to counterpart events within ±1.5 s for recall measurement.
-  // (Both directions: manual-after-auto and auto-after-manual.)
-  var linked = [];
-  for (var i = 0; i < state.swings.length; i++) {
-    var other = state.swings[i];
-    if (!!other.manual === !!manual) continue; // only cross-link auto<->manual
-    var dt = Math.abs(other.sessionTimeSec - swingEntry.sessionTimeSec) * 1000;
-    if (dt <= RECALL_LINK_MS) {
-      linked.push(other.id);
-      if (!other.linkedIds) other.linkedIds = [];
-      if (other.linkedIds.indexOf(swingEntry.id) < 0) other.linkedIds.push(swingEntry.id);
-    }
+  // Freeze the saving decision at detection time: a swing spotted while
+  // saving is on gets logged even if the user hits Done mid-track.
+  var saving = state.recording;
+  if (saving) {
+    captureSwingClip(state.swingCount, ps);
   }
-  if (linked.length) swingEntry.linkedIds = linked;
+
+  // Build the session-log entry only when saving. id is session-relative;
+  // liveN is the absolute live count (matches what the TV showed).
+  var swingEntry = null;
+  if (saving) {
+    swingEntry = {
+      id: state.swings.length + 1,
+      liveN: state.swingCount,
+      time: new Date().toISOString(),
+      sessionTimeSec: (now - state.sessionStart) / 1000,
+      manual: !!manual,
+      // Detector state at mark time — for later recall comparison.
+      detector: {
+        hotFrac: lastHotFrac, motionLevel: motionLevel,
+        spikeT: ps ? ps.spike.t : null,
+        validated: !manual
+      }
+    };
+
+    // Link to counterpart events within ±1.5 s for recall measurement.
+    // (Both directions: manual-after-auto and auto-after-manual.)
+    var linked = [];
+    for (var i = 0; i < state.swings.length; i++) {
+      var other = state.swings[i];
+      if (!!other.manual === !!manual) continue; // only cross-link auto<->manual
+      var dt = Math.abs(other.sessionTimeSec - swingEntry.sessionTimeSec) * 1000;
+      if (dt <= RECALL_LINK_MS) {
+        linked.push(other.id);
+        if (!other.linkedIds) other.linkedIds = [];
+        if (other.linkedIds.indexOf(swingEntry.id) < 0) other.linkedIds.push(swingEntry.id);
+      }
+    }
+    if (linked.length) swingEntry.linkedIds = linked;
+  }
 
   // Ball track: for auto swings, use the track that started at spike time
   // (the ball is already 600ms into flight). For manual, start one now.
   var seed = (motionSeed && now - motionSeed.t < 5000) ? motionSeed : null;
-  swingEntry.motionSeed = seed ? { x: +seed.x.toFixed(3), y: +seed.y.toFixed(3) } : null;
+  if (saving && swingEntry) {
+    swingEntry.motionSeed = seed ? { x: +seed.x.toFixed(3), y: +seed.y.toFixed(3) } : null;
+  }
 
   var ballPromise;
   if (ps && ps.ballPromise) {
@@ -780,13 +805,15 @@ function logSwing(manual, ps) {
   }
   ballPromise.then(function (trail) {
     var result = analyzeSwing(trail);
-    swingEntry.result = result;
-    state.swings.push(swingEntry);
-    renderSwing(swingEntry);
-    // Push to TV via CageCast
+    if (saving && swingEntry) {
+      swingEntry.result = result;
+      state.swings.push(swingEntry);
+      renderSwing(swingEntry);
+    }
+    // Push to TV via CageCast — always, when connected and the ball was tracked.
     if (window.CageCast && CageCast.isConnected() && result.tracked) {
       CageCast.swing({
-        n: state.swings.length,
+        n: state.swingCount,
         exitVeloMph: result.exitVeloMph,
         launchAngleDeg: result.launchAngleDeg,
         at: new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})
@@ -916,7 +943,9 @@ function loop(ts) {
       lastMeterUpdate = ts;
       updateMotionMeter(m.hotFrac);
     }
-    if (!state.recording) return;
+    // Detector runs automatically when the camera is live — no Start press
+    // needed. state.recording (saving) only controls whether swings are logged.
+    if (!cameraLive()) return;
     if (!state.streamOK) {
       // Step 9: stream lost — the frame is frozen, so any "motion" here
       // would be phantom swings. The meter above keeps updating; the
@@ -994,7 +1023,7 @@ function attachClipPlayer(swingId, blob) {
 
 function startSession() {
   state.swings = [];
-  state.swingCount = 0;
+  // state.swingCount (live counter) keeps going — the TV shows every swing.
   state.sessionStart = Date.now();
   state.streamGaps = [];   // Step 9: reset the stream-death ledger
   state.streamOK = true;
@@ -1016,9 +1045,9 @@ function startSession() {
   } catch (e) {}
 
   state.recording = true;
-  statusEl.textContent = "● Live — watching for swings";
+  statusEl.textContent = "● Saving — swings logged to session";
   statusEl.className = "status recording";
-  if (window.CageCast && CageCast.isConnected()) CageCast.session('live');
+  if (window.CageCast && CageCast.isConnected()) CageCast.session('live', 'Saving swings');
   startClipRing(); // continuous recorder feeds the pre-roll ring
   btnStart.classList.add("hidden");
   btnStop.classList.remove("hidden");
@@ -1040,9 +1069,12 @@ function startSession() {
 function stopSession() {
   state.recording = false;
   stopClipRing();
-  if (window.CageCast && CageCast.isConnected()) CageCast.session('idle', 'Session ended');
+  // Detector keeps running if the camera is live — only saving stops.
+  if (window.CageCast && CageCast.isConnected()) {
+    CageCast.session(cameraLive() ? 'live' : 'idle', cameraLive() ? 'Not saving' : 'Session ended');
+  }
   if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
-  statusEl.textContent = "Session ended";
+  statusEl.textContent = cameraLive() ? "Camera live — hit Save to log swings" : "Session ended";
   statusEl.className = "status idle";
   btnStop.classList.add("hidden");
   btnStart.classList.remove("hidden");
@@ -1280,7 +1312,7 @@ function selectLocal() {
   btnStart.disabled = true;
   initCamera().then(function () {
     btnStart.disabled = false;
-    statusEl.textContent = "Camera ready";
+    statusEl.textContent = "Camera live — swings show on TV, hit Save to log them";
     ensureLoop();
   }).catch(function () {
     statusEl.textContent = "Camera blocked — allow access and reload";
@@ -1347,7 +1379,7 @@ window.SessionApp.onRemoteStream = function (stream) {
   // streamMuted opens a gap in the session ledger and disarms the
   // detector; streamLive closes the gap. Idempotent — safe to call twice.
   window.SessionApp.streamMuted = function () {
-    if (!state.recording) return;
+    if (!cameraLive()) return;
     if (state.streamOK) {
       state.streamOK = false;
       state.gapStart = (Date.now() - state.sessionStart) / 1000;
