@@ -45,7 +45,7 @@
   #state.live { background:#12351f; color:var(--good); }
   #state.paused { background:#3a2b10; color:var(--accent); }
   main {
-    flex:1; display:grid; grid-template-columns:1.2fr 1fr;
+    flex:1; display:grid; grid-template-columns:1.2fr 1fr 1fr;
     gap:3vw; padding:3vh 4vw; min-height:0;
   }
   .card {
@@ -115,10 +115,40 @@
     <h2>SESSION</h2>
     <ol id="recent-list"></ol>
   </div>
+  <div class="card" id="field-card">
+    <h2>BALL FLIGHT</h2>
+    <svg id="field" viewBox="0 0 400 400" style="width:100%;height:auto;">
+      <!-- Outfield grass -->
+      <path d="M 200 380 A 180 180 0 0 1 20 200 L 200 200 Z" fill="#1a3a1a" opacity="0.3"/>
+      <path d="M 200 380 A 180 180 0 0 0 380 200 L 200 200 Z" fill="#1a3a1a" opacity="0.3"/>
+      <!-- Infield dirt -->
+      <path d="M 200 340 L 140 280 L 200 220 L 260 280 Z" fill="#4a3728" opacity="0.5"/>
+      <!-- Bases -->
+      <rect x="196" y="376" width="8" height="8" fill="#fff" transform="rotate(45 200 380)"/>
+      <rect x="136" y="276" width="8" height="8" fill="#fff" transform="rotate(45 140 280)"/>
+      <rect x="196" y="216" width="8" height="8" fill="#fff" transform="rotate(45 200 220)"/>
+      <rect x="256" y="276" width="8" height="8" fill="#fff" transform="rotate(45 260 280)"/>
+      <!-- Pitcher's mound -->
+      <ellipse cx="200" cy="300" rx="12" ry="8" fill="#4a3728" opacity="0.5"/>
+      <!-- Home plate -->
+      <polygon points="200,380 194,374 194,368 206,368 206,374" fill="#fff"/>
+      <!-- Fence arc (320 ft) -->
+      <path d="M 60 140 A 220 220 0 0 1 340 140" fill="none" stroke="#5a6372" stroke-width="2" stroke-dasharray="8,4"/>
+      <text x="200" y="130" text-anchor="middle" fill="#5a6372" font-size="12">320 FT</text>
+      <!-- Trajectory path (drawn by JS) -->
+      <path id="traj" fill="none" stroke="#ffb020" stroke-width="3" opacity="0"/>
+      <!-- Landing marker (drawn by JS) -->
+      <circle id="landing" r="8" fill="#ff4444" opacity="0"/>
+      <text id="dist-label" x="200" y="50" text-anchor="middle" fill="#ffb020" font-size="20" font-weight="bold" opacity="0">-- ft</text>
+    </svg>
+    <div id="traj-info" style="margin-top:1vh;font-size:2.2vh;color:var(--dim);text-align:center;">
+      Waiting for swing data...
+    </div>
+  </div>
 </main>
 
 <footer>
-  <span id="build">cast build 20260919a</span>
+  <span id="build">cast build 20260920a</span>
   <button id="refresh" type="button">Refresh</button>
 </footer>
 
@@ -152,6 +182,10 @@
     laEl.textContent = fmt(msg.launchAngleDeg, 0);
     swingNEl.textContent = (typeof msg.n === 'number') ? msg.n : '–';
     swingAtEl.textContent = msg.at ? ' · ' + msg.at : '';
+    // Draw the trajectory if we have both velo and angle
+    if (typeof msg.exitVeloMph === 'number' && typeof msg.launchAngleDeg === 'number') {
+      drawTrajectory(msg.exitVeloMph, msg.launchAngleDeg);
+    }
     var li = document.createElement('li');
     var evTxt = fmt(msg.exitVeloMph, 1), laTxt = fmt(msg.launchAngleDeg, 0);
     li.innerHTML = '<span class="n">#' + (msg.n || '–') + '</span>' +
@@ -171,6 +205,65 @@
     swingAtEl.textContent = '';
     recentList.innerHTML = '';
     setState('idle');
+    // Clear the field
+    el('traj').setAttribute('opacity', '0');
+    el('landing').setAttribute('opacity', '0');
+    el('dist-label').setAttribute('opacity', '0');
+    el('traj-info').textContent = 'Waiting for swing data...';
+  }
+
+  // Projectile physics: given exit velo (mph) and launch angle (deg),
+  // calculate the range and draw the trajectory on the field diagram.
+  // Uses simple projectile motion (no air resistance) — good enough for
+  // a visual estimate. Real balls fly ~10-15% shorter due to drag.
+  function drawTrajectory(exitVeloMph, launchAngleDeg) {
+    var g = 32.2; // ft/s^2
+    var vFps = exitVeloMph * 5280 / 3600; // mph to ft/s
+    var theta = launchAngleDeg * Math.PI / 180;
+    
+    // Range = v^2 * sin(2θ) / g
+    var rangeFt = (vFps * vFps * Math.sin(2 * theta)) / g;
+    
+    // SVG: home plate at (200, 380), field extends up
+    // Scale: 180px = 180ft (1px per ft for simplicity, capped at fence)
+    var maxDisplay = 220; // px (to the fence arc)
+    var scale = maxDisplay / 320; // 320ft fence = 220px
+    
+    var startX = 200, startY = 380;
+    var endDist = Math.min(rangeFt, 340); // cap at 340ft for display
+    var endX = 200; // straightaway center (we don't have spray angle yet)
+    var endY = startY - (endDist * scale);
+    
+    // Draw a parabolic arc
+    var midX = (startX + endX) / 2;
+    var peakHeight = (endDist * scale) * 0.3 * Math.sin(theta); // visual apex
+    var midY = Math.min(startY, endY) - peakHeight;
+    
+    var path = 'M ' + startX + ' ' + startY +
+               ' Q ' + midX + ' ' + midY +
+               ' ' + endX + ' ' + endY;
+    
+    var traj = el('traj');
+    traj.setAttribute('d', path);
+    traj.setAttribute('opacity', '1');
+    
+    var landing = el('landing');
+    landing.setAttribute('cx', endX);
+    landing.setAttribute('cy', endY);
+    landing.setAttribute('opacity', '1');
+    
+    var label = el('dist-label');
+    label.textContent = Math.round(rangeFt) + ' ft';
+    label.setAttribute('x', endX);
+    label.setAttribute('y', Math.max(30, endY - 15));
+    label.setAttribute('opacity', '1');
+    
+    var info = el('traj-info');
+    var result = rangeFt >= 320 ? 'HOME RUN distance!' :
+                 rangeFt >= 250 ? 'Deep outfield' :
+                 rangeFt >= 150 ? 'Outfield' : 'Infield';
+    info.textContent = Math.round(rangeFt) + ' ft projected · ' + result;
+    info.style.color = 'var(--fg)';
   }
 
   function onMessage(event) {
