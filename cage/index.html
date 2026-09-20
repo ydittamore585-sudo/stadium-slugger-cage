@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Cage Session — Stadium Slugger</title>
+<link rel="stylesheet" href="styles.css?v=20260918f">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <h1>⚾ Cage Session <span id="build-tag-top" style="font-size:12px;font-weight:normal;opacity:.65" title="Build running on this device — both devices should match"></span></h1>
+    <div id="session-status" class="status idle">Ready</div>
+    <button id="btn-start" class="big">● Start</button>
+    <button id="btn-stop" class="big hidden" disabled>■ End</button>
+    <button id="btn-mark" class="big hidden" title="Log a swing manually — ground truth for detector tuning">✋ Mark</button>
+    <button id="btn-cast" class="big ghost" title="Cast to the TV">📺 Cast</button>
+  </header>
+
+  <div id="camera-wrap">
+    <video id="cam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="calib-markers"></div>
+  </div>
+  <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
+
+  <details id="camera-setup">
+    <summary>📷 Camera setup</summary>
+  <div id="source-picker">
+    <button id="src-local" class="src active">📷 This device's camera</button>
+    <button id="btn-broadcast" class="src">📡 Phone: broadcast camera</button>
+    <button id="btn-watch" class="src">📺 Laptop: watch phone</button>
+  </div>
+
+  <div id="cast-panel" class="hidden">
+    <div id="cast-status"></div>
+    <div id="cast-health" class="hidden"></div>
+    <div id="cast-pin-show" class="hidden">
+      <div class="cast-pin-label">On your phone, open this page,<br>tap “📡 Phone: broadcast camera”, and enter:</div>
+      <div id="cast-pin"></div>
+      <div id="cast-pin-hint" class="cast-dim"></div>
+      <div><button id="cast-pin-new" class="cast-linkbtn" title="Generate a different code">↻ new code</button></div>
+    </div>
+    <div id="cast-pin-enter" class="hidden">
+      <div class="cast-pin-label">Enter the 6-digit code shown on the laptop:</div>
+      <input id="cast-pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="······" autocomplete="off">
+      <button id="btn-cast-pair">Pair</button>
+      <div id="cast-pin-entry-status" class="cast-dim"></div>
+    </div>
+    <div id="cast-qr"></div>
+    <div id="cast-textwrap" class="hidden">
+      <textarea id="cast-text" readonly rows="4"></textarea>
+      <button id="btn-copy-code">Copy text</button>
+    </div>
+    <details id="cast-manual-details">
+      <summary>Pair with manual codes (no internet)</summary>
+      <div id="cast-actions"></div>
+      <div id="cast-scan-wrap" class="hidden">
+        <video id="cast-scan-video" playsinline muted></video>
+        <canvas id="cast-scan-canvas" class="hidden"></canvas>
+      </div>
+      <div id="cast-paste-wrap" class="hidden">
+        <textarea id="cast-paste" rows="4" placeholder="Paste the code from the other device"></textarea>
+        <button id="btn-apply-code">Apply code</button>
+      </div>
+    </details>
+    <button id="btn-cast-close">Close</button>
+    <button id="btn-switch-cam" class="hidden" title="Flip between front and rear camera">⇄ Switch camera</button>
+    <button id="btn-switch-cam-remote" class="hidden" title="Tell the phone to flip between front and rear camera">⇄ Switch phone camera</button>
+    <button id="btn-calibrate" class="hidden" title="Tap known points on the phone's live feed to calibrate">📐 Calibrate phone camera</button>
+  </div>
+
+  <div id="calib-panel" class="hidden">
+    <h3>📐 Calibrate phone camera <span id="calib-count" class="muted"></span></h3>
+    <p class="hint">Pick a point, then tap exactly where it appears in the video above. 6+ spread-out points beats 4 clustered ones. Click a marker to remove it. The phone must not move after this.</p>
+    <div id="calib-points"></div>
+    <div id="calib-status" class="hint"></div>
+    <div class="row">
+      <button id="calib-solve" class="btn primary">Solve</button>
+      <button id="calib-apply" class="btn" disabled>Apply calibration</button>
+      <button id="calib-save" class="btn" disabled>Save profile</button>
+      <button id="calib-auto" class="btn" title="Re-find saved reference points in the current frame and re-solve automatically">✨ Auto-adjust</button>
+      <button id="calib-test-capture" class="btn" title="Prove the laptop can grab pixels from the phone feed">📸 Test capture</button>
+      <button id="calib-height" class="btn" disabled title="Measure height scale: hold the 36-in bat vertically at the plate, tap top then bottom">📏 Height</button>
+      <button id="calib-verify" class="btn" disabled title="Verify the calibration: ball on the ground at a known spot, tap it">⚾ Verify ball</button>
+      <button id="calib-use-last" class="btn" title="Use the 2026-09-17 validated chair-position calibration (approximate)">📍 Use last position</button>
+      <label class="btn ghost" style="cursor:pointer" title="Load a saved calibration profile (with reference patches)">
+        📂 Load
+        <input type="file" id="calib-load-file" accept=".json,application/json" style="display:none">
+      </label>
+      <button id="calib-close" class="btn ghost">Close</button>
+    </div>
+  </div>
+
+  <div id="motion-tuning">
+    <label id="sens-wrap">Detector
+      <select id="motion-sens">
+        <option value="calm">Calm</option>
+        <option value="normal" selected>Normal</option>
+        <option value="sensitive">Sensitive</option>
+      </select>
+    </label>
+    <div id="motion-meter" title="Live motion level — swings spike past the yellow line"><div id="motion-fill"></div><div id="motion-thresh"></div></div>
+  </div>
+
+  <div id="controls">
+    <button id="btn-gopro-ble" title="Pair with the GoPro over Bluetooth — disconnect Quik first, camera takes one connection">🔵 Connect GoPro</button>
+  </div>
+  <div id="gopro-panel" class="hidden" title="Shown only when the GoPro bridge is reachable or the camera is paired over Bluetooth">
+    <span id="gopro-dot" class="dot"></span>
+    <span id="gopro-status">GoPro: …</span>
+    <button id="btn-gopro-start" class="big">⏺ Rec</button>
+    <button id="btn-gopro-stop" class="big" disabled>⏹ Stop</button>
+  </div>
+  </details>
+  <label id="clip-toggle-wrap"><input type="checkbox" id="clip-toggle" checked> Save each swing's clip to the folder + replay in the log (~5 s: 3 s pre-roll + 2 s post, ~2.5 MB each)</label>
+  <div id="controls2">
+    <button id="btn-download" class="hidden" disabled>⬇ Save Swing Log</button>
+    <button id="btn-sound">🔊 Sound on</button>
+  </div>
+
+  <div id="live-metrics">
+    <div class="metric"><span class="label">Swings</span><span id="m-swings" class="value">0</span></div>
+    <div class="metric"><span class="label">Last EV</span><span id="m-ev" class="value">—</span></div>
+    <div class="metric"><span class="label">Last LA</span><span id="m-la" class="value">—</span></div>
+    <div class="metric"><span class="label">Recording</span><span id="m-rec" class="value">—</span></div>
+  </div>
+
+  <h2>Swing Log <button id="btn-clear-swings" title="Delete all swing entries">Clear</button></h2>
+  <div id="swing-log"><p class="empty">No swings yet. Take a cut.</p></div>
+
+  <details id="profile-details">
+    <summary>Calibration profile</summary>
+    <div id="profile-info">Loading…</div>
+    <label id="profile-load">Phone calibration file (wizard export):
+      <input type="file" id="profile-file" accept=".json,application/json">
+    </label>
+    <div id="profile-warn"></div>
+  </details>
+
+  <footer id="build-bar">
+    <span id="build-tag" title="Build running on this device — both devices should match">build …</span>
+    <button id="btn-refresh" title="Reload this page fresh from the server">↻ Refresh page</button>
+  </footer>
+</div>
+<script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+<script src="../cast/cast-sender.js?v=20260919a"></script>
+<script src="../calibration-wizard/calibration.js?v=20260918f"></script>
+<script src="vendor/qrcode.min.js?v=20260917c"></script>
+<script src="vendor/jsqr.min.js?v=20260917c"></script>
+<script src="vendor/lz-string.min.js?v=20260917c"></script>
+<script src="mqtt.js?v=20260917d"></script>
+<script src="cast.js?v=20260919c"></script>
+<script src="calib.js?v=20260918i"></script>
+<script src="webm-duration.js?v=20260918h"></script>
+<script src="swing-detect.js?v=20260918j"></script>
+<script src="clip-assemble.js?v=20260918j"></script>
+<script src="session.js?v=20260920b"></script>
+<script src="gopro-bridge.js?v=20260919e"></script>
+</body>
+</html>

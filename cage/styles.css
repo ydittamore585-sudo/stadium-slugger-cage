@@ -1,0 +1,219 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #0a0e1a; color: #e8ecf4;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+#app { max-width: 720px; margin: 0 auto; padding: 12px; }
+/* Sticky top bar: status + main actions always visible */
+#topbar {
+  position: sticky; top: 0; z-index: 20;
+  background: #0a0e1a; padding: 8px 0;
+  display: flex; gap: 8px; align-items: center;
+  border-bottom: 1px solid #1e2742;
+}
+#topbar h1 { font-size: 1.1rem; margin: 0; flex: 1; }
+#topbar button.big { flex: 0 0 auto; padding: 10px 16px; font-size: 0.95rem; }
+/* Collapsible camera setup */
+#camera-setup { margin: 10px 0; border: 1px solid #1e2742; border-radius: 10px; padding: 0 10px; }
+#camera-setup summary { padding: 10px 0; cursor: pointer; font-weight: 600; }
+#camera-setup #controls { display: flex; gap: 10px; margin: 10px 0; }
+#camera-setup #controls button { flex: 1; }
+.status {
+  padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600;
+}
+.status.idle { background: #2a3350; color: #9fb0d0; }
+.status.recording { background: #7a1f1f; color: #ffb3b3; animation: pulse 1.5s infinite; }
+@keyframes pulse { 50% { opacity: 0.6; } }
+#camera-wrap { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; }
+#cam, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#overlay { pointer-events: none; }
+#camera-hint {
+  margin: 8px 0 0; padding: 8px; border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  font-size: 0.75rem; text-align: center; color: #cdd8ee;
+}
+#controls2 { display: flex; gap: 10px; margin: 0 0 14px; }
+#clip-toggle-wrap { display: block; margin: 0 0 10px; font-size: 0.9rem; color: #cdd8ee; }
+#clip-toggle-wrap input { transform: scale(1.3); margin-right: 8px; }
+button.big {
+  flex: 1; padding: 16px; font-size: 1.1rem; font-weight: 700;
+  border: none; border-radius: 12px; cursor: pointer;
+}
+#btn-start { background: #1f7a3a; color: #fff; }
+#btn-start:disabled { background: #2a3350; color: #777; }
+#btn-stop { background: #a02a2a; color: #fff; }
+#btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+#gopro-panel { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2c3a5e; border-radius: 12px; background: rgba(255,255,255,0.04); }
+#gopro-panel button.big { padding: 12px; font-size: 1rem; }
+#btn-gopro-connect, #btn-gopro-ble { flex: 1; padding: 12px; font-size: 1rem; font-weight: 700; border: 1px solid #2c3a5e; border-radius: 12px; background: #232c47; color: #cfd8f3; cursor: pointer; }
+#btn-gopro-ble:disabled { opacity: 0.45; cursor: default; }
+#btn-gopro-start { background: #1f7a3a; color: #fff; }
+#btn-gopro-start:disabled { background: #2a3350; color: #777; }
+#btn-gopro-stop { background: #a02a2a; color: #fff; }
+#btn-gopro-stop:disabled { background: #2a3350; color: #777; }
+#gopro-status { font-size: 0.85rem; color: #cdd8ee; white-space: nowrap; }
+.dot { width: 12px; height: 12px; border-radius: 50%; background: #555; flex: none; }
+.dot-rec { background: #e5484d; box-shadow: 0 0 8px #e5484d; }
+.dot-idle { background: #3a7a3a; }
+.dot-down { background: #a02a2a; }
+#build-bar { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid #232c47; }
+#build-tag { font-size: 0.75rem; color: #8a9bbd; font-family: monospace; }
+#btn-refresh { background: #232c47; color: #cfd8f3; border: 1px solid #34406a; border-radius: 10px; padding: 10px 14px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+.hidden { display: none !important; }
+#live-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.metric { background: #141b2e; border-radius: 10px; padding: 10px 6px; text-align: center; }
+.metric .label { display: block; font-size: 0.7rem; color: #8a9bbd; text-transform: uppercase; }
+.metric .value { display: block; font-size: 1.25rem; font-weight: 700; margin-top: 4px; }
+h2 { font-size: 1.05rem; margin: 14px 0 8px; }
+#swing-log .empty { color: #8a9bbd; font-style: italic; }
+.swing-card {
+  background: #141b2e; border-radius: 10px; padding: 12px; margin-bottom: 8px;
+  border-left: 4px solid #2a5aa0;
+}
+.swing-card.tracked { border-left-color: #1f7a3a; }
+.swing-card.notracked { border-left-color: #7a6a1f; }
+.swing-card h3 { margin: 0 0 6px; font-size: 1rem; }
+.swing-card .nums { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.9rem; }
+.swing-card .nums b { color: #fff; }
+.swing-card .note { font-size: 0.78rem; color: #8a9bbd; margin-top: 6px; }
+video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background: #000; }
+#profile-details { margin-top: 16px; font-size: 0.82rem; color: #9fb0d0; }
+#profile-details summary { cursor: pointer; color: #cdd8ee; }
+#source-picker { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+#source-picker .src {
+  flex: 1; min-width: 150px; padding: 10px; border-radius: 10px;
+  border: 2px solid #2a3350; background: #141b2e; color: #cdd8ee;
+  font-size: 0.85rem; font-weight: 600; cursor: pointer;
+}
+#source-picker .src.active { border-color: #4ade80; color: #fff; }
+#cast-panel { background: #141b2e; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+#cast-status { font-weight: 600; margin-bottom: 10px; }
+#cast-qr { display: flex; justify-content: center; margin: 10px 0; background: #fff; border-radius: 8px; padding: 10px; }
+#cast-qr:empty { display: none; }
+#cast-textwrap textarea, #cast-paste-wrap textarea {
+  width: 100%; background: #0a0e1a; color: #9fb0d0; border: 1px solid #2a3350;
+  border-radius: 8px; font-size: 0.7rem; margin-bottom: 8px;
+}
+#cast-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+#cast-actions button, #btn-copy-code, #btn-apply-code, #btn-cast-close, #btn-cast-pair, #btn-switch-cam, #btn-switch-cam-remote, #btn-calibrate {
+  padding: 10px 14px; border-radius: 8px; border: none; cursor: pointer;
+  background: #2a5aa0; color: #fff; font-weight: 600;
+}
+#cast-pin-show, #cast-pin-enter { text-align: center; margin: 12px 0; }
+.cast-pin-label { font-weight: 600; margin-bottom: 10px; }
+#cast-pin {
+  font-size: 44px; font-weight: 800; letter-spacing: 12px; text-indent: 12px;
+  background: #0a0e1a; border-radius: 10px; padding: 10px 0; margin: 0 auto 8px; max-width: 340px;
+}
+.cast-linkbtn {
+  background: none; border: none; cursor: pointer; margin-top: 6px;
+  color: #8a9bbd; font-size: 0.8rem; text-decoration: underline;
+}
+.cast-dim { opacity: 0.7; font-size: 13px; margin-top: 8px; }
+#cast-pin-input {
+  font-size: 28px; letter-spacing: 8px; text-align: center; width: 200px;
+  padding: 8px; border-radius: 8px; border: 1px solid #2a3350;
+  background: #0a0e1a; color: #fff;
+}
+#cast-manual-details { margin-top: 12px; }
+#cast-manual-details summary { cursor: pointer; opacity: 0.75; font-size: 13px; }
+#btn-cast-close { background: #2a3350; margin-top: 8px; }
+#cast-scan-video { width: 100%; border-radius: 8px; background: #000; }
+#profile-load { display: block; margin-top: 10px; }
+#profile-warn { color: #e8c84a; font-size: 0.82rem; margin-top: 6px; }
+#motion-tuning { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+#sens-wrap { font-size: 14px; font-weight: 600; white-space: nowrap; }
+#motion-sens {
+  margin-left: 6px; padding: 6px 8px; border-radius: 8px;
+  background: #141b2e; color: #fff; border: 1px solid #2a3350; font-size: 14px;
+}
+#motion-meter {
+  position: relative; flex: 1; height: 10px; background: #0a0e1a;
+  border-radius: 6px; border: 1px solid #2a3350; overflow: hidden;
+}
+#motion-fill { height: 100%; width: 0%; background: #2a5aa0; transition: width 120ms linear; }
+#motion-fill.hot { background: #4ade80; }
+#motion-thresh { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: #e8c84a; }
+.swing-card { position: relative; }
+.swing-del {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: #2a3350; color: #9fb0d0; font-size: 13px; line-height: 1;
+}
+#btn-clear-swings {
+  margin-left: 10px; padding: 4px 12px; border-radius: 8px; cursor: pointer;
+  background: #2a3350; color: #9fb0d0; border: 1px solid #3a4560;
+  font-size: 0.8rem; font-weight: 600;
+}
+
+/* Laptop-side phone calibration */
+#calib-markers { position: absolute; inset: 0; pointer-events: none; }
+#camera-wrap { position: relative; }
+.calib-marker {
+  position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px;
+  border: 2px solid #4ade80; border-radius: 50%;
+  background: rgba(74, 222, 128, 0.25);
+  pointer-events: auto; cursor: pointer;
+}
+.calib-marker:hover { background: rgba(248, 113, 113, 0.5); border-color: #f87171; }
+#calib-panel {
+  margin: 12px 0; padding: 12px 14px;
+  background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+}
+#calib-panel h3 { margin: 0 0 6px; font-size: 15px; }
+#calib-points { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.calib-pt {
+  padding: 6px 10px; font-size: 13px; border-radius: 8px;
+  border: 1px solid #475569; background: #0f172a; color: #e2e8f0; cursor: pointer;
+}
+.calib-pt.done { border-color: #4ade80; color: #4ade80; }
+.calib-pt.sel { border-color: #60a5fa; background: #1e3a8a; }
+/* Shared button style — explicit (browser defaults render near-white and
+   unreadable under color-scheme: dark in some browsers). */
+.btn {
+  padding: 10px 14px; font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  color: #fff; background: #2a5aa0; border: 1px solid #3b6fc4; border-radius: 8px;
+}
+.btn:hover:not(:disabled) { background: #3568b8; }
+.btn.primary { background: #1f7a3a; border-color: #2a9d4e; }
+.btn.primary:hover:not(:disabled) { background: #258c44; }
+.btn:disabled { background: #2a3350; border-color: #2a3350; color: #8a9bbd; cursor: not-allowed; }
+.btn.ghost { background: transparent; border-color: #475569; color: #cdd8ee; }
+.btn.ghost:hover:not(:disabled) { background: #1e293b; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+
+#calib-status { margin: 8px 0; min-height: 1.2em; }
+.src-badge { font-size: 0.65em; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
+.src-badge.manual { background: #7c3aed; color: #fff; }
+.src-badge.auto { background: #1e40af; color: #dbeafe; }
+
+/* Step 9: stream-lost overlay + phone OS-kill warning */
+#stream-lost-banner {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(20, 4, 4, 0.82); color: #ffb3b3;
+  font-size: 22px; font-weight: 800; text-align: center; padding: 20px;
+}
+#stream-lost-repair {
+  margin-top: 14px; padding: 12px 26px; border-radius: 10px; border: none; cursor: pointer;
+  background: #a02a2a; color: #fff; font-size: 16px; font-weight: 700;
+}
+#cast-dead-banner {
+  font-size: 48px; font-weight: 800; line-height: 1.25; text-align: center;
+  color: #ffe1e1; background: #7a1f1f; border-radius: 10px;
+  padding: 16px; margin-bottom: 10px;
+}
+
+/* Step 1: ball-on-ground verification box */
+#calib-verify-box {
+  margin: 8px 0; padding: 10px 12px;
+  background: #0f172a; border: 1px solid #475569; border-radius: 8px;
+}
+#calib-verify-box label { font-size: 13px; margin-right: 10px; color: #e2e8f0; }
+#calib-verify-box input {
+  width: 70px; padding: 6px 8px; margin-left: 4px; border-radius: 6px;
+  border: 1px solid #475569; background: #0a0e1a; color: #fff;
+}
+#calib-verify-box .btn { margin-left: 6px; }
+#calib-verify-result { margin-top: 8px; }
