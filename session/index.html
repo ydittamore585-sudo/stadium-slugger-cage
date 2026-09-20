@@ -12,9 +12,13 @@
 </head>
 <body>
 <div id="app">
-  <header>
+  <header id="topbar">
     <h1>⚾ Cage Session <span id="build-tag-top" style="font-size:12px;font-weight:normal;opacity:.65" title="Build running on this device — both devices should match"></span></h1>
     <div id="session-status" class="status idle">Ready</div>
+    <button id="btn-start" class="big">● Start</button>
+    <button id="btn-stop" class="big hidden" disabled>■ End</button>
+    <button id="btn-mark" class="big hidden" title="Log a swing manually — ground truth for detector tuning">✋ Mark</button>
+    <button id="btn-cast" class="big ghost" title="Cast to the TV">📺 Cast</button>
   </header>
 
   <div id="camera-wrap">
@@ -24,6 +28,8 @@
   </div>
   <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
 
+  <details id="camera-setup">
+    <summary>📷 Camera setup</summary>
   <div id="source-picker">
     <button id="src-local" class="src active">📷 This device's camera</button>
     <button id="btn-broadcast" class="src">📡 Phone: broadcast camera</button>
@@ -102,21 +108,15 @@
   </div>
 
   <div id="controls">
-    <button id="btn-start" class="big">● Start Live Session</button>
-    <button id="btn-stop" class="big hidden" disabled>■ End Session</button>
-    <button id="btn-mark" class="big hidden" title="Log a swing manually — ground truth for detector tuning">✋ Mark Swing</button>
+    <button id="btn-gopro-ble" title="Pair with the GoPro over Bluetooth — disconnect Quik first, camera takes one connection">🔵 Connect GoPro</button>
   </div>
-  <div id="gopro-connect-row">
-    <button id="btn-gopro-connect" title="Connect to the laptop GoPro bridge (node bridge.mjs on the GoPro WiFi)">📷 Connect GoPro</button>
-    <button id="btn-gopro-ble" title="Pair with the GoPro over Bluetooth (no laptop / WiFi needed)">🔵 GoPro Bluetooth</button>
-  </div>
-  <div id="gopro-hint">🔵 Bluetooth tip: disconnect Quik from the camera first — it takes only one Bluetooth connection at a time.</div>
   <div id="gopro-panel" class="hidden" title="Shown only when the GoPro bridge is reachable or the camera is paired over Bluetooth">
     <span id="gopro-dot" class="dot"></span>
     <span id="gopro-status">GoPro: …</span>
-    <button id="btn-gopro-start" class="big">⏺ GoPro Start</button>
-    <button id="btn-gopro-stop" class="big" disabled>⏹ GoPro Stop</button>
+    <button id="btn-gopro-start" class="big">⏺ Rec</button>
+    <button id="btn-gopro-stop" class="big" disabled>⏹ Stop</button>
   </div>
+  </details>
   <label id="clip-toggle-wrap"><input type="checkbox" id="clip-toggle" checked> Save each swing's clip to the folder + replay in the log (~5 s: 3 s pre-roll + 2 s post, ~2.5 MB each)</label>
   <div id="controls2">
     <button id="btn-download" class="hidden" disabled>⬇ Save Swing Log</button>
@@ -147,6 +147,8 @@
     <button id="btn-refresh" title="Reload this page fresh from the server">↻ Refresh page</button>
   </footer>
 </div>
+<script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+<script src="../cast/cast-sender.js?v=20260919a"></script>
 <script src="../calibration-wizard/calibration.js?v=20260918f"></script>
 <script src="vendor/qrcode.min.js?v=20260917c"></script>
 <script src="vendor/jsqr.min.js?v=20260917c"></script>
@@ -157,7 +159,7 @@
 <script src="webm-duration.js?v=20260918h"></script>
 <script src="swing-detect.js?v=20260918j"></script>
 <script src="clip-assemble.js?v=20260918j"></script>
-<script src="session.js?v=20260918j"></script>
+<script src="session.js?v=20260920b"></script>
 <script src="gopro-bridge.js?v=20260919e"></script>
 </body>
 </html>
