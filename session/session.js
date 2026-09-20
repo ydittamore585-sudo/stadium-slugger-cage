@@ -91,6 +91,19 @@ var btnMark = document.getElementById("btn-mark");
 if (btnMark) btnMark.addEventListener("click", function () {
   if (state.recording) markSwingManual();
 });
+// CageCast TV display — App ID from localStorage (set after Cast SDK registration)
+var btnCast = document.getElementById("btn-cast");
+if (window.CageCast && btnCast) {
+  var castAppId = null;
+  try { castAppId = localStorage.getItem('cagecast_app_id'); } catch (e) {}
+  CageCast.init({
+    appId: castAppId || '62FE612A',
+    button: btnCast,
+    onStateChange: function(connected) {
+      if (connected) CageCast.session(state.recording ? 'live' : 'idle');
+    }
+  });
+}
 var btnDownload = document.getElementById("btn-download");
 var statusEl = document.getElementById("session-status");
 var swingLogEl = document.getElementById("swing-log");
@@ -770,6 +783,15 @@ function logSwing(manual, ps) {
     swingEntry.result = result;
     state.swings.push(swingEntry);
     renderSwing(swingEntry);
+    // Push to TV via CageCast
+    if (window.CageCast && CageCast.isConnected() && result.tracked) {
+      CageCast.swing({
+        n: state.swings.length,
+        exitVeloMph: result.exitVeloMph,
+        launchAngleDeg: result.launchAngleDeg,
+        at: new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})
+      });
+    }
     if (result.tracked) {
       beep(1320, 120); // second, higher beep: the ball was tracked
       mEV.textContent = result.exitVeloMph.toFixed(0) + " mph";
@@ -996,6 +1018,7 @@ function startSession() {
   state.recording = true;
   statusEl.textContent = "● Live — watching for swings";
   statusEl.className = "status recording";
+  if (window.CageCast && CageCast.isConnected()) CageCast.session('live');
   startClipRing(); // continuous recorder feeds the pre-roll ring
   btnStart.classList.add("hidden");
   btnStop.classList.remove("hidden");
@@ -1017,6 +1040,7 @@ function startSession() {
 function stopSession() {
   state.recording = false;
   stopClipRing();
+  if (window.CageCast && CageCast.isConnected()) CageCast.session('idle', 'Session ended');
   if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
   statusEl.textContent = "Session ended";
   statusEl.className = "status idle";
