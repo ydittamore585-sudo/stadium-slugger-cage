@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ball Tracker — Live Test</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 12px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  #wrap { display: flex; gap: 16px; flex-wrap: wrap; }
+  #stage { position: relative; }
+  video, canvas#ov { width: 960px; max-width: 100%; display: block; background: #000; }
+  canvas#ov { position: absolute; left: 0; top: 0; }
+  #log { flex: 1; min-width: 280px; max-width: 420px; }
+  #log h2 { font-size: 14px; margin: 0 0 6px; }
+  #events { list-style: none; margin: 0; padding: 0; font-size: 13px; max-height: 420px; overflow-y: auto; }
+  #events li { padding: 4px 6px; border-bottom: 1px solid #333; }
+  #events li.pitch { color: #8cf; }
+  #events li.contact { color: #fc6; }
+  #events li.hit { color: #8f8; }
+  #events li.miss { color: #f88; }
+  #verdict { font-size: 20px; font-weight: bold; margin: 8px 0; min-height: 28px; }
+  #controls { margin: 10px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font-size: 14px; padding: 8px 14px; cursor: pointer; }
+  select { font-size: 14px; padding: 6px; }
+  #stats { font-size: 13px; color: #aaa; }
+  footer { margin-top: 16px; font-size: 12px; color: #888; display: flex; gap: 12px; align-items: center; }
+  #buildtag { font-family: monospace; }
+</style>
+</head>
+<body>
+<h1>Ball Tracker — Live Test</h1>
+<div id="controls">
+  <select id="cam"></select>
+  <button id="start">Start camera</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="swing" disabled>✋ Mark Swing</button>
+  <span id="stats">fps: — · state: idle</span>
+</div>
+<div id="verdict"></div>
+<div id="wrap">
+  <div id="stage">
+    <video id="vid" playsinline muted></video>
+    <canvas id="ov"></canvas>
+  </div>
+  <div id="log">
+    <h2>Event log</h2>
+    <ul id="events"></ul>
+  </div>
+</div>
+<footer>
+  <span id="buildtag"></span>
+  <button id="refresh">Refresh (bust cache)</button>
+</footer>
+<canvas id="proc" width="480" height="270" style="display:none"></canvas>
+<script src="live-ball-track.js?v=20260921c"></script>
+<script>
+(function () {
+  'use strict';
+  var BUILD = '20260921c';
+  document.getElementById('buildtag').textContent = 'build ' + BUILD;
+
+  var vid = document.getElementById('vid');
+  var ov = document.getElementById('ov');
+  var octx = ov.getContext('2d');
+  var proc = document.getElementById('proc');
+  var pctx = proc.getContext('2d', { willReadFrequently: true });
+  var camSel = document.getElementById('cam');
+  var startBtn = document.getElementById('start');
+  var stopBtn = document.getElementById('stop');
+  var swingBtn = document.getElementById('swing');
+  var statsEl = document.getElementById('stats');
+  var verdictEl = document.getElementById('verdict');
+  var eventsEl = document.getElementById('events');
+
+  var PW = 480, PH = 270;
+  ov.width = PW; ov.height = PH;
+
+  var tracker = null, stream = null, running = false;
+  var frameCount = 0, lastFpsT = performance.now(), fps = 0;
+  var flash = []; // {x, y, t0}
+
+  function log(kind, text) {
+    var li = document.createElement('li');
+    li.className = kind;
+    li.textContent = new Date().toLocaleTimeString() + ' — ' + text;
+    eventsEl.prepend(li);
+    while (eventsEl.children.length > 60) eventsEl.removeChild(eventsEl.lastChild);
+  }
+
+  function onEvent(ev) {
+    if (ev.type === 'pitch' && ev.state === 'start') {
+      log('pitch', 'PITCH start f' + ev.f);
+    } else if (ev.type === 'pitch' && ev.state === 'end') {
+      log('pitch', 'pitch end f' + ev.f);
+    } else if (ev.type === 'contact') {
+      log('contact', 'provisional contact f' + ev.f + ' @(' + ev.x.toFixed(0) + ',' + ev.y.toFixed(0) + ')');
+      flash.push({ x: ev.x, y: ev.y, t0: performance.now() });
+    } else if (ev.type === 'batted' && ev.state === 'start') {
+      var lp = ev.pts[ev.pts.length - 1];
+      log('hit', 'BATTED BALL f' + ev.f + (ev.reprov ? ' (re-acquired)' : ev.reappeared ? ' (reappeared)' : ''));
+      flash.push({ x: lp.x, y: lp.y, t0: performance.now() });
+    } else if (ev.type === 'verdict') {
+      var label = ev.verdict === 'hit' ? 'HIT' : ev.verdict === 'swing-no-contact' ? 'SWING — NO CONTACT' : 'TAKE';
+      var color = ev.verdict === 'hit' ? '#8f8' : ev.verdict === 'swing-no-contact' ? '#fc6' : '#aaa';
+      verdictEl.innerHTML = '<span style="color:' + color + '">' + label + '</span>';
+      log(ev.verdict === 'hit' ? 'hit' : ev.verdict === 'swing-no-contact' ? 'miss' : '',
+          'VERDICT: ' + label + ' (pitch f' + ev.pitchF0 + '→' + ev.pitchF1 +
+          (ev.spd != null ? ', ' + ev.spd.toFixed(1) + 'px/f' : '') +
+          (ev.contactF != null ? ', contact f' + ev.contactF : '') + ')');
+    }
+  }
+
+  function drawOverlay() {
+    octx.clearRect(0, 0, PW, PH);
+    if (!tracker) return;
+    var st = tracker.state();
+    // pitch trail — cyan (points are already in 480x270 tracker coords)
+    if (st.pitch && st.pitch.pts.length > 1) {
+      octx.strokeStyle = '#4df'; octx.lineWidth = 2; octx.beginPath();
+      st.pitch.pts.forEach(function (p, i) {
+        if (i === 0) octx.moveTo(p.x, p.y); else octx.lineTo(p.x, p.y);
+      });
+      octx.stroke();
+    }
+    // batted trail — green
+    if (st.batted && st.batted.pts.length > 1) {
+      octx.strokeStyle = '#4f4'; octx.lineWidth = 3; octx.beginPath();
+      st.batted.pts.forEach(function (p, i) {
+        if (i === 0) octx.moveTo(p.x, p.y); else octx.lineTo(p.x, p.y);
+      });
+      octx.stroke();
+    }
+    // contact flashes
+    var now = performance.now();
+    flash = flash.filter(function (f) { return now - f.t0 < 600; });
+    flash.forEach(function (f) {
+      var age = (now - f.t0) / 600;
+      octx.strokeStyle = 'rgba(255,220,80,' + (1 - age).toFixed(2) + ')';
+      octx.lineWidth = 3;
+      octx.beginPath();
+      octx.arc(f.x, f.y, 6 + age * 40, 0, Math.PI * 2);
+      octx.stroke();
+    });
+  }
+
+  function loop() {
+    if (!running) return;
+    if (vid.readyState >= 2 && vid.videoWidth > 0) {
+      pctx.drawImage(vid, 0, 0, PW, PH);
+      var img = pctx.getImageData(0, 0, PW, PH);
+      var d = img.data;
+      var gray = new Uint8Array(PW * PH);
+      for (var i = 0, j = 0; i < d.length; i += 4, j++) {
+        gray[j] = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+      }
+      tracker.push(gray, performance.now());
+      drawOverlay();
+      frameCount++;
+      var now = performance.now();
+      if (now - lastFpsT >= 1000) {
+        fps = Math.round(frameCount * 1000 / (now - lastFpsT));
+        frameCount = 0; lastFpsT = now;
+      }
+      var st = tracker.state();
+      statsEl.textContent = 'fps: ' + fps +
+        ' · state: ' + (st.batted ? 'batted ball' : st.contactF != null ? 'contact f' + st.contactF :
+                        st.pitch ? 'pitch f' + st.pitch.f0 : st.inContactWindow ? 'contact window' : 'idle');
+    }
+    requestAnimationFrame(loop);
+  }
+
+  async function listCams() {
+    try {
+      var devs = await navigator.mediaDevices.enumerateDevices();
+      camSel.innerHTML = '';
+      devs.filter(function (d) { return d.kind === 'videoinput'; }).forEach(function (d, i) {
+        var o = document.createElement('option');
+        o.value = d.deviceId;
+        o.textContent = d.label || ('Camera ' + (i + 1));
+        camSel.appendChild(o);
+      });
+    } catch (e) { /* labels need permission first */ }
+  }
+
+  startBtn.onclick = async function () {
+    try {
+      var constraints = { video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false };
+      if (camSel.value) constraints.video.deviceId = { exact: camSel.value };
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      vid.srcObject = stream;
+      await vid.play();
+      await listCams(); // refresh labels now that permission is granted
+      tracker = BallTrack.createLiveTracker({ onEvent: onEvent, debug: false });
+      running = true;
+      verdictEl.textContent = '';
+      startBtn.disabled = true; stopBtn.disabled = false; swingBtn.disabled = false;
+      log('', 'camera started');
+      requestAnimationFrame(loop);
+    } catch (e) {
+      log('miss', 'camera error: ' + e.message);
+    }
+  };
+
+  stopBtn.onclick = function () {
+    running = false;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null; tracker = null;
+    octx.clearRect(0, 0, PW, PH);
+    startBtn.disabled = false; stopBtn.disabled = true; swingBtn.disabled = true;
+    statsEl.textContent = 'fps: — · state: idle';
+    log('', 'camera stopped');
+  };
+
+  swingBtn.onclick = function () {
+    if (tracker) {
+      tracker.notifySwing(performance.now());
+      log('contact', 'manual swing mark');
+    }
+  };
+
+  document.getElementById('refresh').onclick = function () {
+    location.replace(location.pathname + '?fresh=' + Date.now());
+  };
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) listCams();
+})();
+</script>
+</body>
+</html>
