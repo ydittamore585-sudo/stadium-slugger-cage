@@ -859,7 +859,8 @@ function logSwing(manual, ps) {
       detector: {
         hotFrac: lastHotFrac, motionLevel: motionLevel,
         spikeT: ps ? ps.spike.t : null,
-        validated: !manual
+        validated: !manual,
+        trigger: manual ? "manual" : ((ps && ps.audio) ? "crack" : "motion")
       }
     };
 
@@ -1071,6 +1072,79 @@ function loop(ts) {
 document.getElementById("motion-sens").addEventListener("change", function (ev) {
   motionLevel = ev.target.value in SENS_LEVELS ? ev.target.value : "normal";
   createDetector(); // rebuild with new sensitivity
+});
+
+/* ------------------------------------------------------------------ */
+/* Bat-crack audio detector (mic).                                      */
+/* The crack of the bat is a sharp broadband transient that does not   */
+/* care how far the camera is. On trigger it feeds logSwing directly —  */
+/* the crack IS the validation signal, no motion spike needed.         */
+/* ------------------------------------------------------------------ */
+var crackDetector = null;
+var crackToggleEl = null, audioFillEl = null, crackStatusEl = null;
+
+function onBatCrack(info) {
+  // No camera, no ball track — ignore.
+  try { if (!cameraLive()) return; } catch (e) { return; }
+  flashAudioMeter();
+  // Pseudo-ps: no motion spike, so logSwing starts its own ball track
+  // from the fresh motion seed. trigger:"crack" marks the source.
+  logSwing(false, { audio: true, spike: { t: (info && info.t) || Date.now() } });
+}
+
+function updateAudioMeter() {
+  if (!crackDetector || !crackDetector.isRunning()) return;
+  if (!audioFillEl) audioFillEl = document.getElementById("audio-fill");
+  if (!audioFillEl) return;
+  var lv = crackDetector.level();
+  audioFillEl.style.width = (lv * 100).toFixed(1) + "%";
+  audioFillEl.style.background = lv >= 0.66 ? "#4ade80" : "#2a5aa0";
+  requestAnimationFrame(updateAudioMeter);
+}
+
+function flashAudioMeter() {
+  if (!audioFillEl) audioFillEl = document.getElementById("audio-fill");
+  if (!audioFillEl) return;
+  audioFillEl.style.width = "100%";
+  audioFillEl.style.background = "#4ade80";
+}
+
+function setCrackToggleUI(on, label) {
+  if (!crackToggleEl) crackToggleEl = document.getElementById("crack-toggle");
+  if (!crackToggleEl) return;
+  if (!crackStatusEl) crackStatusEl = document.getElementById("crack-status");
+  crackToggleEl.textContent = on ? "🎤 Crack detect: on" : "🎤 Crack detect: off";
+  crackToggleEl.classList.toggle("armed", !!on);
+  if (crackStatusEl) crackStatusEl.textContent = label || "";
+}
+
+document.getElementById("crack-toggle").addEventListener("click", function () {
+  // Click = user gesture: satisfies the AudioContext autoplay policy.
+  if (crackDetector && crackDetector.isRunning()) {
+    crackDetector.stop();
+    crackDetector = null;
+    setCrackToggleUI(false, "");
+    return;
+  }
+  setCrackToggleUI(false, "listening…");
+  crackDetector = createCrackDetector(onBatCrack);
+  crackDetector.start(function (status) {
+    // calibrating | on | denied | error | off
+    if (status === "on") {
+      setCrackToggleUI(true, "mic live — clap to test");
+      updateAudioMeter();
+    } else if (status === "calibrating") {
+      setCrackToggleUI(false, "stay quiet — calibrating…");
+    } else if (status === "denied") {
+      crackDetector = null;
+      setCrackToggleUI(false, "mic blocked — allow microphone");
+    } else if (status === "error") {
+      crackDetector = null;
+      setCrackToggleUI(false, "no mic on this device");
+    } else {
+      setCrackToggleUI(false, "");
+    }
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -1332,6 +1406,14 @@ function downloadSession() {
       detections: state.swingCount,
       loggedSwings: state.swings.length,
       wasSavingAtExport: !!state.recording,
+      crackDetectOn: (function () {
+        try { return !!(crackDetector && crackDetector.isRunning()); }
+        catch (e) { return null; }
+      })(),
+      crackTriggers: (function () {
+        try { return crackDetector ? crackDetector.triggerCount() : 0; }
+        catch (e) { return null; }
+      })(),
       cameraLive: (function () { try { return cameraLive(); } catch (e) { return null; } })(),
       videoSize: (function () {
         try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
