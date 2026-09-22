@@ -24,7 +24,7 @@ function createCrackDetector(onCrack) {
   var BAND_HI_HZ = 8000;
   var RATIO = 6;             // band energy must exceed baseline x RATIO
   var MIN_RATIO_HF = 0.30;   // band/total energy — crack is HF-dominant
-  var MIN_PEAK = 0.08;       // time-domain peak (0..1) — rejects noise floor
+  var MIN_PEAK = 0.01;       // time-domain peak (0..1) — rejects noise floor
   var COOLDOWN_MS = 2500;     // one crack = one swing; net thud lands inside
   var POLL_MS = 30;
 
