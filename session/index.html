@@ -35,6 +35,13 @@
     <button id="btn-broadcast" class="src">📡 Phone: broadcast camera</button>
     <button id="btn-watch" class="src">📺 Laptop: watch phone</button>
   </div>
+  <div id="camera-picker-row" style="display:flex;gap:8px;align-items:center;margin:0 0 12px;">
+    <label for="camera-select" style="font-size:0.85rem;color:#9fb0d0;white-space:nowrap;">Camera:</label>
+    <select id="camera-select" style="flex:1;min-width:0;padding:10px;border-radius:10px;border:2px solid #2a3350;background:#141b2e;color:#fff;font-size:0.85rem;">
+      <option value="">Detecting cameras…</option>
+    </select>
+    <button id="camera-rescan" title="Re-scan for cameras" style="padding:10px 12px;border-radius:10px;border:2px solid #2a3350;background:#141b2e;color:#cdd8ee;cursor:pointer;">↻</button>
+  </div>
 
   <div id="cast-panel" class="hidden">
     <div id="cast-status"></div>
@@ -154,12 +161,12 @@
 <script src="vendor/jsqr.min.js?v=20260920c"></script>
 <script src="vendor/lz-string.min.js?v=20260920c"></script>
 <script src="mqtt.js?v=20260920c"></script>
-<script src="cast.js?v=20260921e"></script>
+<script src="cast.js?v=20260921f"></script>
 <script src="calib.js?v=20260920c"></script>
 <script src="webm-duration.js?v=20260920c"></script>
 <script src="swing-detect.js?v=20260920c"></script>
 <script src="clip-assemble.js?v=20260920c"></script>
-<script src="session.js?v=20260921e"></script>
+<script src="session.js?v=20260921f"></script>
 <script src="gopro-bridge.js?v=20260919e"></script>
 </body>
 </html>

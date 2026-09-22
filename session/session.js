@@ -160,26 +160,115 @@ profileInfoEl.textContent =
 /* ------------------------------------------------------------------ */
 /* Camera                                                              */
 /* ------------------------------------------------------------------ */
-function initCamera() {
+/* Camera picker: enumerate this device's cameras, remember the choice in
+   localStorage, and allow switching mid-session. The detector loop and
+   ball tracker read the live `video` element, so they follow the swap;
+   the clip ring restarts itself on the new stream via ensureClipRing. */
+var CAM_DEVICE_KEY = "cage.cameraDeviceId";
+
+function savedCameraDeviceId() {
+  try { return localStorage.getItem(CAM_DEVICE_KEY) || ""; } catch (e) { return ""; }
+}
+function saveCameraDeviceId(id) {
+  try {
+    if (id) localStorage.setItem(CAM_DEVICE_KEY, id);
+    else localStorage.removeItem(CAM_DEVICE_KEY);
+  } catch (e) {}
+}
+function activeCameraDeviceId() {
+  try {
+    var t = state.stream && state.stream.getVideoTracks()[0];
+    var s = t && t.getSettings();
+    return (s && s.deviceId) || "";
+  } catch (e) { return ""; }
+}
+
+function initCamera(deviceId) {
+  var id = (deviceId === undefined) ? savedCameraDeviceId() : deviceId;
   var constraints = {
     video: {
-      facingMode: "environment",
       width: { ideal: 1280 },
       height: { ideal: 720 },
       frameRate: { ideal: 30 }
     },
     audio: false
   };
-  return navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-    state.stream = stream;
-    video.srcObject = stream;
-    return new Promise(function (resolve) {
-      video.onloadedmetadata = function () {
-        overlay.width = video.videoWidth || 1280;
-        overlay.height = video.videoHeight || 720;
-        resolve();
-      };
+  if (id) constraints.video.deviceId = { exact: id };
+  else constraints.video.facingMode = "environment";
+  return navigator.mediaDevices.getUserMedia(constraints).then(attachLocalStream, function (err) {
+    // Saved camera vanished (unplugged)? Forget it and try the default once.
+    if (id) {
+      saveCameraDeviceId("");
+      return initCamera("");
+    }
+    throw err;
+  });
+}
+
+function attachLocalStream(stream) {
+  state.stream = stream;
+  video.srcObject = stream;
+  return new Promise(function (resolve) {
+    var settled = false;
+    function done() {
+      if (settled) return;
+      settled = true;
+      overlay.width = video.videoWidth || 1280;
+      overlay.height = video.videoHeight || 720;
+      resolve();
+    }
+    video.onloadedmetadata = done;
+    if (video.readyState >= 1) done(); // swap path: metadata may already be present
+  });
+}
+
+function listCameras() {
+  var sel = document.getElementById("camera-select");
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  var want = savedCameraDeviceId() || activeCameraDeviceId();
+  navigator.mediaDevices.enumerateDevices().then(function (devs) {
+    var cams = devs.filter(function (d) { return d.kind === "videoinput"; });
+    var prev = sel.value;
+    sel.innerHTML = "";
+    if (!cams.length) {
+      var o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = "No cameras found";
+      sel.appendChild(o0);
+      return;
+    }
+    cams.forEach(function (d, i) {
+      var o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || ("Camera " + (i + 1));
+      sel.appendChild(o);
     });
+    var pick = "";
+    for (var i = 0; i < cams.length; i++) {
+      if (cams[i].deviceId === want) { pick = want; break; }
+    }
+    sel.value = pick || prev;
+    if (!sel.value && cams.length) sel.value = cams[0].deviceId;
+  }).catch(function () {});
+}
+
+function switchLocalCamera(deviceId) {
+  if (remoteMode || !deviceId || deviceId === activeCameraDeviceId()) return;
+  saveCameraDeviceId(deviceId);
+  if (state.stream) {
+    try { state.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+  }
+  state.stream = null;
+  statusEl.textContent = "Switching camera…";
+  btnStart.disabled = true;
+  initCamera(deviceId).then(function () {
+    btnStart.disabled = false;
+    statusEl.textContent = "Camera live — swings show on TV, hit Save to log them";
+    ensureLoop();
+    listCameras();
+  }).catch(function () {
+    statusEl.textContent = "Couldn't open that camera — pick another.";
+    btnStart.disabled = false;
   });
 }
 
@@ -1308,6 +1397,9 @@ function setSrcActive(id) {
     var b = document.getElementById(x);
     if (b) b.classList.toggle("active", x === id);
   });
+  // The camera picker only applies to this device's camera.
+  var cpr = document.getElementById("camera-picker-row");
+  if (cpr) cpr.style.display = (id === "src-local") ? "" : "none";
 }
 
 function setProfileWarning(msg) {
@@ -1322,10 +1414,12 @@ function selectLocal() {
   if (localInited || remoteMode) return;
   localInited = true;
   btnStart.disabled = true;
+  listCameras(); // populate early (labels fill in after permission is granted)
   initCamera().then(function () {
     btnStart.disabled = false;
     statusEl.textContent = "Camera live — swings show on TV, hit Save to log them";
     ensureLoop();
+    listCameras(); // refresh: real device labels need the granted permission
   }).catch(function () {
     statusEl.textContent = "Camera blocked — allow access and reload";
     document.getElementById("camera-hint").textContent =
@@ -1337,6 +1431,22 @@ document.getElementById("src-local").addEventListener("click", selectLocal);
 ["btn-broadcast", "btn-watch"].forEach(function (id) {
   document.getElementById(id).addEventListener("click", function () { setSrcActive(id); });
 });
+
+// Camera picker wiring.
+(function () {
+  var sel = document.getElementById("camera-select");
+  if (sel) sel.addEventListener("change", function () {
+    switchLocalCamera(sel.value);
+  });
+  var rescan = document.getElementById("camera-rescan");
+  if (rescan) rescan.addEventListener("click", function () { listCameras(); });
+  // Pick up cameras plugged in after page load (e.g. GoPro connected late).
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", function () { listCameras(); });
+    }
+  } catch (e) {}
+})();
 
 // Called by cast.js when the phone's stream arrives.
 // Merge, don't replace: calib.js stashes the live phone calibration on this
