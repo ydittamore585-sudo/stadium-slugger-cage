@@ -94,6 +94,7 @@ function createCrackDetector(onCrack) {
   function poll() {
     if (!running) return;
     var now = Date.now();
+    if (ctx && ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
     analyser.getByteFrequencyData(freqBytes);
     var bandE = bandEnergy();
     var totE = totalEnergy();
@@ -130,16 +131,28 @@ function createCrackDetector(onCrack) {
       setStatus("error");
       return;
     }
-    // NOTE: called from a click handler — satisfies the AudioContext
-    // user-gesture requirement.
+    // NOTE: the AudioContext MUST be created synchronously here, inside the
+    // click gesture. Creating it inside the getUserMedia promise (async)
+    // leaves it "suspended" under the autoplay policy and the analyser
+    // hears silence forever.
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { setStatus("error"); return; }
+    try {
+      ctx = new AC();
+      if (ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
+    } catch (e) { setStatus("error"); return; }
     navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     }).then(function (s) {
       stream = s;
-      var AC = window.AudioContext || window.webkitAudioContext;
-      ctx = new AC();
-      if (ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
-      src = ctx.createMediaStreamSource(stream);
+      try {
+        src = ctx.createMediaStreamSource(stream);
+      } catch (e) {
+        try { ctx.close(); } catch (e2) {}
+        ctx = null;
+        setStatus("error");
+        return;
+      }
       analyser = ctx.createAnalyser();
       analyser.fftSize = FFT_SIZE;
       analyser.smoothingTimeConstant = 0; // raw transients, no smearing
@@ -154,6 +167,8 @@ function createCrackDetector(onCrack) {
       timer = setInterval(poll, POLL_MS);
       calibrate();
     }, function () {
+      try { if (ctx) ctx.close(); } catch (e) {}
+      ctx = null;
       setStatus("denied");
     });
   }
@@ -182,7 +197,8 @@ function createCrackDetector(onCrack) {
     telemetry: function () {
       return {
         floor: Math.round(floorAbs), base: Math.round(base),
-        maxBandE: Math.round(maxBandE), lastBandE: Math.round(lastBandE)
+        maxBandE: Math.round(maxBandE), lastBandE: Math.round(lastBandE),
+        ctxState: (function () { try { return ctx ? ctx.state : "none"; } catch (e) { return "?"; } })()
       };
     }
   };
