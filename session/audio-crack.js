@@ -39,6 +39,7 @@ function createCrackDetector(onCrack) {
   var triggers = 0;
   var lastLevel = 0;         // 0..1 for the meter
   var lastBandE = 0;
+  var maxBandE = 0;          // peak-hold of band energy while running
   var statusCb = null;
   var binHz = 0, binLo = 0, binHi = 0;
 
@@ -98,6 +99,7 @@ function createCrackDetector(onCrack) {
     var totE = totalEnergy();
     var peak = timePeak();
     lastBandE = bandE;
+    if (bandE > maxBandE) maxBandE = bandE;
     // Meter: band energy relative to the trigger floor.
     lastLevel = Math.max(0, Math.min(1, bandE / (floorAbs * 1.5)));
 
@@ -148,6 +150,7 @@ function createCrackDetector(onCrack) {
       freqBytes = new Uint8Array(analyser.frequencyBinCount);
       timeBytes = new Uint8Array(analyser.fftSize);
       running = true;
+      maxBandE = 0;
       timer = setInterval(poll, POLL_MS);
       calibrate();
     }, function () {
@@ -173,7 +176,15 @@ function createCrackDetector(onCrack) {
     triggerCount: function () { return triggers; },
     level: function () { return lastLevel; },
     // for the meter's threshold marker: floor relative to meter scale
-    floorLevel: function () { return Math.max(0, Math.min(1, floorAbs / (floorAbs * 1.5))); }
+    floorLevel: function () { return Math.max(0, Math.min(1, floorAbs / (floorAbs * 1.5))); },
+    // Mic-hearing telemetry for the export diagnostics: what the mic has
+    // actually heard (peak band energy) vs the trigger floor and baseline.
+    telemetry: function () {
+      return {
+        floor: Math.round(floorAbs), base: Math.round(base),
+        maxBandE: Math.round(maxBandE), lastBandE: Math.round(lastBandE)
+      };
+    }
   };
 }
 

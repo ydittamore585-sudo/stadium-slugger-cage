@@ -1414,6 +1414,13 @@ function downloadSession() {
         try { return crackDetector ? crackDetector.triggerCount() : 0; }
         catch (e) { return null; }
       })(),
+      // What the mic has actually heard: peak band energy vs floor/baseline.
+      // If swings aren't triggering, this says whether the crack reaches
+      // the mic at all.
+      crackMic: (function () {
+        try { return (crackDetector && crackDetector.isRunning()) ? crackDetector.telemetry() : null; }
+        catch (e) { return null; }
+      })(),
       cameraLive: (function () { try { return cameraLive(); } catch (e) { return null; } })(),
       videoSize: (function () {
         try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
