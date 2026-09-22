@@ -1396,6 +1396,13 @@ function downloadSession() {
   } catch (e) {}
   var log = {
     exportedAt: new Date().toISOString(),
+    // Self-identifying build: ends the "which build made this export" guessing.
+    build: (function () {
+      try {
+        var t = document.getElementById("build-tag");
+        return t ? t.textContent.replace(/^build\s+/, "") : null;
+      } catch (e) { return null; }
+    })(),
     profile: { label: PROFILE.label, verified: PROFILE.verified },
     streamStart: state.streamStart || null,
     streamEnd: streamEnd,
