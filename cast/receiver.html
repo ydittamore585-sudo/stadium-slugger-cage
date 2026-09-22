@@ -13,7 +13,10 @@
   Message protocol on urn:x-cast:com.stadiumslugger.cage (JSON):
     sender -> receiver
       {type:'session', state:'live'|'idle'|'paused', label?:string}
-      {type:'swing', n:number, exitVeloMph:number|null, launchAngleDeg:number|null, at:string}
+      {type:'swing', n:number, exitVeloMph:number|null, launchAngleDeg:number|null, at:string,
+                 verdict?:'HIT'|'SWING — NO CONTACT'|'TAKE', pitchSpeedPxF?:number|null}
+      Ball-tracker verdicts carry verdict + pitchSpeedPxF (no calibrated
+      mph/deg yet); the dashboard shows the verdict big instead of metrics.
       {type:'reset'}
     receiver -> sender
       {type:'ready'}
@@ -59,6 +62,11 @@
   .metric .lbl { font-size:2.4vh; color:var(--dim); letter-spacing:.1em; margin-top:1vh; }
   #swing-num { font-size:3vh; color:var(--dim); margin-top:2.5vh; }
   #swing-num b { color:var(--fg); font-size:4vh; }
+  .verdict { font-size:8vh; font-weight:800; line-height:1.1; letter-spacing:.04em; }
+  .verdict.good { color:var(--good); }
+  .verdict.miss { color:var(--accent); }
+  .verdict.take { color:var(--dim); }
+  #verdict-sub { font-size:2.6vh; color:var(--dim); margin-top:1.5vh; }
   #recent { font-size:2.8vh; }
   #recent ol { list-style:none; }
   #recent li {
@@ -99,7 +107,7 @@
 <main>
   <div class="card" id="last-swing">
     <h2>LAST SWING</h2>
-    <div class="big">
+    <div class="big" id="swing-metrics">
       <div class="metric">
         <span class="val" id="ev">--</span><span class="unit">mph</span>
         <div class="lbl">EXIT VELO</div>
@@ -108,6 +116,10 @@
         <span class="val" id="la">--</span><span class="unit">deg</span>
         <div class="lbl">LAUNCH</div>
       </div>
+    </div>
+    <div id="verdict-block" style="display:none">
+      <div id="verdict-line" class="verdict">–</div>
+      <div id="verdict-sub"></div>
     </div>
     <div id="swing-num">Swing <b id="swing-n">–</b> <span id="swing-at"></span></div>
   </div>
@@ -148,7 +160,7 @@
 </main>
 
 <footer>
-  <span id="build">cast build 20260920a</span>
+  <span id="build">cast build 20260921a</span>
   <button id="refresh" type="button">Refresh</button>
 </footer>
 
@@ -178,20 +190,46 @@
   }
 
   function onSwing(msg) {
-    evEl.textContent = fmt(msg.exitVeloMph, 1);
-    laEl.textContent = fmt(msg.launchAngleDeg, 0);
+    var hasVerdict = !!msg.verdict;
+    // Ball-tracker verdicts (HIT / SWING — NO CONTACT / TAKE) have no
+    // calibrated mph/deg yet: show the verdict big instead of the metrics.
+    el('swing-metrics').style.display = hasVerdict ? 'none' : '';
+    el('verdict-block').style.display = hasVerdict ? '' : 'none';
+    if (hasVerdict) {
+      var vl = el('verdict-line');
+      vl.textContent = msg.verdict;
+      vl.className = 'verdict ' + (msg.verdict === 'HIT' ? 'good' : msg.verdict === 'TAKE' ? 'take' : 'miss');
+      el('verdict-sub').textContent =
+        (typeof msg.pitchSpeedPxF === 'number') ? msg.pitchSpeedPxF.toFixed(1) + ' px/frame pitch speed' : '';
+    } else {
+      evEl.textContent = fmt(msg.exitVeloMph, 1);
+      laEl.textContent = fmt(msg.launchAngleDeg, 0);
+      // Draw the trajectory if we have both velo and angle
+      if (typeof msg.exitVeloMph === 'number' && typeof msg.launchAngleDeg === 'number') {
+        drawTrajectory(msg.exitVeloMph, msg.launchAngleDeg);
+      }
+    }
     swingNEl.textContent = (typeof msg.n === 'number') ? msg.n : '–';
     swingAtEl.textContent = msg.at ? ' · ' + msg.at : '';
-    // Draw the trajectory if we have both velo and angle
-    if (typeof msg.exitVeloMph === 'number' && typeof msg.launchAngleDeg === 'number') {
-      drawTrajectory(msg.exitVeloMph, msg.launchAngleDeg);
-    }
     var li = document.createElement('li');
-    var evTxt = fmt(msg.exitVeloMph, 1), laTxt = fmt(msg.launchAngleDeg, 0);
-    li.innerHTML = '<span class="n">#' + (msg.n || '–') + '</span>' +
-      '<span class="m">' + (evTxt === '--' ? '-- mph' : evTxt + ' mph') + ' · ' +
-      (laTxt === '--' ? '--°' : laTxt + '°') + '</span>' +
-      '<span class="t">' + (msg.at || '') + '</span>';
+    var mTxt;
+    if (hasVerdict) {
+      mTxt = msg.verdict + ((typeof msg.pitchSpeedPxF === 'number') ? ' · ' + msg.pitchSpeedPxF.toFixed(1) + ' px/f' : '');
+    } else {
+      var evTxt = fmt(msg.exitVeloMph, 1), laTxt = fmt(msg.launchAngleDeg, 0);
+      mTxt = (evTxt === '--' ? '-- mph' : evTxt + ' mph') + ' · ' +
+        (laTxt === '--' ? '--°' : laTxt + '°');
+    }
+    var mSpan = document.createElement('span');
+    mSpan.className = 'm';
+    mSpan.textContent = mTxt;
+    var nSpan = document.createElement('span');
+    nSpan.className = 'n';
+    nSpan.textContent = '#' + (msg.n || '–');
+    var tSpan = document.createElement('span');
+    tSpan.className = 't';
+    tSpan.textContent = msg.at || '';
+    li.appendChild(nSpan); li.appendChild(mSpan); li.appendChild(tSpan);
     recentList.insertBefore(li, recentList.firstChild);
     while (recentList.children.length > MAX_RECENT) {
       recentList.removeChild(recentList.lastChild);
@@ -203,6 +241,8 @@
     laEl.textContent = '--';
     swingNEl.textContent = '–';
     swingAtEl.textContent = '';
+    el('swing-metrics').style.display = '';
+    el('verdict-block').style.display = 'none';
     recentList.innerHTML = '';
     setState('idle');
     // Clear the field

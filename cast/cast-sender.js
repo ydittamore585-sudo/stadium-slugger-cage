@@ -141,11 +141,15 @@ var CageCast = (function () {
     },
 
     swing: function (s) {
+      // s.verdict / s.pitchSpeedPxF are optional: used by the ball-tracker
+      // test page, which has no calibrated mph/deg yet.
       return send({
         type: 'swing',
         n: s.n,
         exitVeloMph: (typeof s.exitVeloMph === 'number') ? s.exitVeloMph : null,
         launchAngleDeg: (typeof s.launchAngleDeg === 'number') ? s.launchAngleDeg : null,
+        verdict: (typeof s.verdict === 'string') ? s.verdict : null,
+        pitchSpeedPxF: (typeof s.pitchSpeedPxF === 'number') ? s.pitchSpeedPxF : null,
         at: s.at || ''
       });
     },

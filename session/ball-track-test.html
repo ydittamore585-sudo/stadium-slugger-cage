@@ -36,6 +36,7 @@
   <button id="start">Start camera</button>
   <button id="stop" disabled>Stop</button>
   <button id="swing" disabled>✋ Mark Swing</button>
+  <button id="cast" title="Cast verdicts to the TV">📺 Cast</button>
   <span id="stats">fps: — · state: idle</span>
 </div>
 <div id="verdict"></div>
@@ -54,11 +55,13 @@
   <button id="refresh">Refresh (bust cache)</button>
 </footer>
 <canvas id="proc" width="480" height="270" style="display:none"></canvas>
-<script src="live-ball-track.js?v=20260921c"></script>
+<script src="https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1"></script>
+<script src="../cast/cast-sender.js?v=20260921a"></script>
+<script src="live-ball-track.js?v=20260921d"></script>
 <script>
 (function () {
   'use strict';
-  var BUILD = '20260921c';
+  var BUILD = '20260921d';
   document.getElementById('buildtag').textContent = 'build ' + BUILD;
 
   var vid = document.getElementById('vid');
@@ -73,6 +76,38 @@
   var statsEl = document.getElementById('stats');
   var verdictEl = document.getElementById('verdict');
   var eventsEl = document.getElementById('events');
+  var castBtn = document.getElementById('cast');
+
+  // CageCast TV dashboard: push every verdict to the Vizio.
+  var swingCount = 0;
+  if (window.CageCast && castBtn) {
+    var castAppId = null;
+    try { castAppId = localStorage.getItem('cagecast_app_id'); } catch (e) {}
+    CageCast.init({
+      appId: castAppId || '62FE612A',
+      button: castBtn,
+      onStateChange: function (connected) {
+        if (connected) CageCast.session(running ? 'live' : 'idle');
+      }
+    });
+  }
+  function castSwing(label, spd) {
+    if (window.CageCast && CageCast.isConnected()) {
+      swingCount++;
+      CageCast.swing({
+        n: swingCount,
+        verdict: label,
+        pitchSpeedPxF: (typeof spd === 'number') ? spd : null,
+        at: new Date().toLocaleTimeString()
+      });
+    }
+  }
+  function castSessionLive() {
+    if (window.CageCast && CageCast.isConnected()) CageCast.session('live');
+  }
+  function castSessionIdle() {
+    if (window.CageCast && CageCast.isConnected()) CageCast.session('idle');
+  }
 
   var PW = 480, PH = 270;
   ov.width = PW; ov.height = PH;
@@ -109,6 +144,7 @@
           'VERDICT: ' + label + ' (pitch f' + ev.pitchF0 + '→' + ev.pitchF1 +
           (ev.spd != null ? ', ' + ev.spd.toFixed(1) + 'px/f' : '') +
           (ev.contactF != null ? ', contact f' + ev.contactF : '') + ')');
+      castSwing(label, ev.spd);
     }
   }
 
@@ -197,6 +233,7 @@
       verdictEl.textContent = '';
       startBtn.disabled = true; stopBtn.disabled = false; swingBtn.disabled = false;
       log('', 'camera started');
+      castSessionLive();
       requestAnimationFrame(loop);
     } catch (e) {
       log('miss', 'camera error: ' + e.message);
@@ -211,6 +248,7 @@
     startBtn.disabled = false; stopBtn.disabled = true; swingBtn.disabled = true;
     statsEl.textContent = 'fps: — · state: idle';
     log('', 'camera stopped');
+    castSessionIdle();
   };
 
   swingBtn.onclick = function () {
