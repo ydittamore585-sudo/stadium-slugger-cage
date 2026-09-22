@@ -1150,7 +1150,12 @@ document.addEventListener("DOMContentLoaded", function () {
   if (switchCam) switchCam.addEventListener("click", switchCamera);
   var buildTxt = "build " + CAST_BUILD;
   var buildTag = el("build-tag");
-  if (buildTag) buildTag.textContent = buildTxt;
+  if (buildTag) {
+    buildTag.textContent = buildTxt;
+    // The tag is a link: tapping it loads the newest build fresh from the
+    // server (cache-busting query), no tab-closing needed.
+    try { buildTag.href = location.pathname + "?fresh=" + Date.now(); } catch (e) {}
+  }
   var buildTagTop = el("build-tag-top");
   if (buildTagTop) buildTagTop.textContent = buildTxt;
   var refreshBtn = el("btn-refresh");
