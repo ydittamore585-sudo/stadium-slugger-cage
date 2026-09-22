@@ -40,6 +40,7 @@ function createCrackDetector(onCrack) {
   var lastLevel = 0;         // 0..1 for the meter
   var lastBandE = 0;
   var maxBandE = 0;          // peak-hold of band energy while running
+  var pollCount = 0;         // proves poll() is actually executing
   var statusCb = null;
   var binHz = 0, binLo = 0, binHi = 0;
 
@@ -94,6 +95,7 @@ function createCrackDetector(onCrack) {
   function poll() {
     if (!running) return;
     var now = Date.now();
+    pollCount++;
     if (ctx && ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
     analyser.getByteFrequencyData(freqBytes);
     var bandE = bandEnergy();
@@ -168,6 +170,7 @@ function createCrackDetector(onCrack) {
       timeBytes = new Uint8Array(analyser.fftSize);
       running = true;
       maxBandE = 0;
+      pollCount = 0;
       timer = setInterval(poll, POLL_MS);
       calibrate();
     }, function (err) {
@@ -205,10 +208,16 @@ function createCrackDetector(onCrack) {
     // Mic-hearing telemetry for the export diagnostics: what the mic has
     // actually heard (peak band energy) vs the trigger floor and baseline.
     telemetry: function () {
+      var trackInfo = null;
+      try {
+        var tr = stream && stream.getAudioTracks && stream.getAudioTracks()[0];
+        if (tr) trackInfo = tr.readyState + (tr.muted ? "/muted" : "/unmuted") + (tr.enabled ? "" : "/disabled");
+      } catch (e) {}
       return {
         floor: Math.round(floorAbs), base: Math.round(base),
         maxBandE: Math.round(maxBandE), lastBandE: Math.round(lastBandE),
-        ctxState: (function () { try { return ctx ? ctx.state : "none"; } catch (e) { return "?"; } })()
+        ctxState: (function () { try { return ctx ? ctx.state : "none"; } catch (e) { return "?"; } })(),
+        polls: pollCount, track: trackInfo
       };
     }
   };

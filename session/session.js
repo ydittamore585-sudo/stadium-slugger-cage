@@ -1507,6 +1507,13 @@ function downloadSession() {
         try { return (crackDetector && crackDetector.isRunning()) ? crackDetector.telemetry() : null; }
         catch (e) { return null; }
       })(),
+      // Which mic the picker has selected (label shown in the dropdown).
+      crackMicLabel: (function () {
+        try {
+          var s = document.getElementById("mic-select");
+          return (s && s.selectedIndex >= 0) ? s.options[s.selectedIndex].textContent : null;
+        } catch (e) { return null; }
+      })(),
       cameraLive: (function () { try { return cameraLive(); } catch (e) { return null; } })(),
       videoSize: (function () {
         try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
