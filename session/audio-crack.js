@@ -40,6 +40,9 @@ function createCrackDetector(onCrack) {
   var lastLevel = 0;         // 0..1 for the meter
   var lastBandE = 0;
   var maxBandE = 0;          // peak-hold of band energy while running
+  var maxTotE = 0;           // peak-hold of TOTAL energy — distinguishes a
+                             // band-math bug (totE>0, bandE=0) from true silence
+  var lastErr = null;        // last exception inside poll(), if any
   var pollCount = 0;         // proves poll() is actually executing
   var statusCb = null;
   var binHz = 0, binLo = 0, binHi = 0;
@@ -96,6 +99,7 @@ function createCrackDetector(onCrack) {
     if (!running) return;
     var now = Date.now();
     pollCount++;
+    try {
     if (ctx && ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
     analyser.getByteFrequencyData(freqBytes);
     var bandE = bandEnergy();
@@ -103,6 +107,7 @@ function createCrackDetector(onCrack) {
     var peak = timePeak();
     lastBandE = bandE;
     if (bandE > maxBandE) maxBandE = bandE;
+    if (totE > maxTotE) maxTotE = totE;
     // Meter: band energy relative to the trigger floor.
     lastLevel = Math.max(0, Math.min(1, bandE / (floorAbs * 1.5)));
 
@@ -122,6 +127,9 @@ function createCrackDetector(onCrack) {
       freezeBaseUntil = now + 600;
       triggers++;
       try { onCrack({ t: now, bandE: bandE, peak: peak }); } catch (e) {}
+    }
+    } catch (e) {
+      lastErr = String((e && e.message) || e);
     }
   }
 
@@ -170,6 +178,8 @@ function createCrackDetector(onCrack) {
       timeBytes = new Uint8Array(analyser.fftSize);
       running = true;
       maxBandE = 0;
+      maxTotE = 0;
+      lastErr = null;
       pollCount = 0;
       timer = setInterval(poll, POLL_MS);
       calibrate();
@@ -215,7 +225,10 @@ function createCrackDetector(onCrack) {
       } catch (e) {}
       return {
         floor: Math.round(floorAbs), base: Math.round(base),
-        maxBandE: Math.round(maxBandE), lastBandE: Math.round(lastBandE),
+        maxBandE: Math.round(maxBandE), maxTotE: Math.round(maxTotE),
+        lastBandE: Math.round(lastBandE), lastErr: lastErr,
+        sampleRate: (function () { try { return ctx ? ctx.sampleRate : 0; } catch (e) { return -1; } })(),
+        bins: binLo + "-" + binHi,
         ctxState: (function () { try { return ctx ? ctx.state : "none"; } catch (e) { return "?"; } })(),
         polls: pollCount, track: trackInfo
       };

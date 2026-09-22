@@ -1514,6 +1514,16 @@ function downloadSession() {
           return (s && s.selectedIndex >= 0) ? s.options[s.selectedIndex].textContent : null;
         } catch (e) { return null; }
       })(),
+      // Every audio input the browser sees (labels need mic permission).
+      micList: (function () {
+        try {
+          var s = document.getElementById("mic-select");
+          if (!s) return null;
+          var out = [];
+          for (var i = 0; i < s.options.length; i++) out.push(s.options[i].textContent);
+          return out;
+        } catch (e) { return null; }
+      })(),
       cameraLive: (function () { try { return cameraLive(); } catch (e) { return null; } })(),
       videoSize: (function () {
         try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
