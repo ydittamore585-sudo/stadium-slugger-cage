@@ -43,6 +43,8 @@ function createCrackDetector(onCrack) {
   var maxTotE = 0;           // peak-hold of TOTAL energy — distinguishes a
                              // band-math bug (totE>0, bandE=0) from true silence
   var lastErr = null;        // last exception inside poll(), if any
+  var nearMiss = null;       // loudest notable event that did NOT trigger,
+                             // with the gates that blocked it
   var pollCount = 0;         // proves poll() is actually executing
   var statusCb = null;
   var binHz = 0, binLo = 0, binHi = 0;
@@ -118,15 +120,30 @@ function createCrackDetector(onCrack) {
     }
 
     var hfRatio = totE > 0 ? bandE / totE : 0;
-    if (now >= cooldownUntil &&
+    var fired = (now >= cooldownUntil &&
         bandE > floorAbs &&
         bandE > base * RATIO &&
         hfRatio > MIN_RATIO_HF &&
-        peak > MIN_PEAK) {
+        peak > MIN_PEAK);
+    if (fired) {
       cooldownUntil = now + COOLDOWN_MS;
       freezeBaseUntil = now + 600;
       triggers++;
       try { onCrack({ t: now, bandE: bandE, peak: peak }); } catch (e) {}
+    } else if (bandE > floorAbs * 0.25) {
+      // Notable energy that did not trigger — remember the loudest one and
+      // which gates blocked it, so a quiet detector can explain itself.
+      var blocked = [];
+      if (!(now >= cooldownUntil)) blocked.push("cooldown");
+      if (!(bandE > floorAbs)) blocked.push("floor");
+      if (!(bandE > base * RATIO)) blocked.push("ratio");
+      if (!(hfRatio > MIN_RATIO_HF)) blocked.push("hf");
+      if (!(peak > MIN_PEAK)) blocked.push("peak");
+      if (blocked.length && (!nearMiss || bandE > nearMiss.bandE)) {
+        nearMiss = { bandE: Math.round(bandE), peak: Math.round(peak),
+                     hf: Math.round(hfRatio * 100) / 100,
+                     base: Math.round(base), blockedBy: blocked.join("+") };
+      }
     }
     } catch (e) {
       lastErr = String((e && e.message) || e);
@@ -180,6 +197,7 @@ function createCrackDetector(onCrack) {
       maxBandE = 0;
       maxTotE = 0;
       lastErr = null;
+      nearMiss = null;
       pollCount = 0;
       timer = setInterval(poll, POLL_MS);
       calibrate();
@@ -227,6 +245,7 @@ function createCrackDetector(onCrack) {
         floor: Math.round(floorAbs), base: Math.round(base),
         maxBandE: Math.round(maxBandE), maxTotE: Math.round(maxTotE),
         lastBandE: Math.round(lastBandE), lastErr: lastErr,
+        nearMiss: nearMiss,
         sampleRate: (function () { try { return ctx ? ctx.sampleRate : 0; } catch (e) { return -1; } })(),
         bins: binLo + "-" + binHi,
         ctxState: (function () { try { return ctx ? ctx.state : "none"; } catch (e) { return "?"; } })(),
