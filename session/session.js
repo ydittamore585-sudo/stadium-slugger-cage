@@ -1083,6 +1083,51 @@ document.getElementById("motion-sens").addEventListener("change", function (ev) 
 var crackDetector = null;
 var crackToggleEl = null, audioFillEl = null, crackStatusEl = null;
 
+/* Mic picker: the crack detector must listen on a mic that actually hears
+   the cage. Enumerate inputs, remember the choice, restart the detector
+   on switch. Mirrors the camera picker. */
+var MIC_DEVICE_KEY = "cage.micDeviceId";
+
+function savedMicDeviceId() {
+  try { return localStorage.getItem(MIC_DEVICE_KEY) || ""; } catch (e) { return ""; }
+}
+function saveMicDeviceId(id) {
+  try {
+    if (id) localStorage.setItem(MIC_DEVICE_KEY, id);
+    else localStorage.removeItem(MIC_DEVICE_KEY);
+  } catch (e) {}
+}
+
+function listMics() {
+  var sel = document.getElementById("mic-select");
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  var want = savedMicDeviceId();
+  navigator.mediaDevices.enumerateDevices().then(function (devs) {
+    var mics = devs.filter(function (d) { return d.kind === "audioinput"; });
+    var prev = sel.value;
+    sel.innerHTML = "";
+    if (!mics.length) {
+      var o0 = document.createElement("option");
+      o0.value = "";
+      o0.textContent = "No microphones found";
+      sel.appendChild(o0);
+      return;
+    }
+    mics.forEach(function (d, i) {
+      var o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || ("Mic " + (i + 1));
+      sel.appendChild(o);
+    });
+    var pick = "";
+    for (var i = 0; i < mics.length; i++) {
+      if (mics[i].deviceId === want) { pick = want; break; }
+    }
+    sel.value = pick || prev;
+    if (!sel.value && mics.length) sel.value = mics[0].deviceId;
+  }).catch(function () {});
+}
+
 function onBatCrack(info) {
   // No camera, no ball track — ignore.
   try { if (!cameraLive()) return; } catch (e) { return; }
@@ -1118,6 +1163,38 @@ function setCrackToggleUI(on, label) {
   if (crackStatusEl) crackStatusEl.textContent = label || "";
 }
 
+function startCrackDetector() {
+  // (Re)start the crack detector on the picked mic (or OS default).
+  // Called from the toggle click = user gesture, satisfying autoplay policy.
+  setCrackToggleUI(false, "listening…");
+  crackDetector = createCrackDetector(onBatCrack);
+  crackDetector.start(crackStatusHandler, savedMicDeviceId() || null);
+}
+
+function crackStatusHandler(status) {
+  // calibrating | on | denied | mic-gone | error | off
+  if (status === "on") {
+    setCrackToggleUI(true, "mic live — clap to test");
+    updateAudioMeter();
+  } else if (status === "calibrating") {
+    setCrackToggleUI(false, "stay quiet — calibrating…");
+  } else if (status === "denied") {
+    crackDetector = null;
+    setCrackToggleUI(false, "mic blocked — allow microphone");
+  } else if (status === "mic-gone") {
+    // Saved mic unplugged: forget it, fall back to the default input.
+    saveMicDeviceId("");
+    listMics();
+    crackDetector = null;
+    startCrackDetector();
+  } else if (status === "error") {
+    crackDetector = null;
+    setCrackToggleUI(false, "no mic on this device");
+  } else {
+    setCrackToggleUI(false, "");
+  }
+}
+
 document.getElementById("crack-toggle").addEventListener("click", function () {
   // Click = user gesture: satisfies the AudioContext autoplay policy.
   if (crackDetector && crackDetector.isRunning()) {
@@ -1126,26 +1203,28 @@ document.getElementById("crack-toggle").addEventListener("click", function () {
     setCrackToggleUI(false, "");
     return;
   }
-  setCrackToggleUI(false, "listening…");
-  crackDetector = createCrackDetector(onBatCrack);
-  crackDetector.start(function (status) {
-    // calibrating | on | denied | error | off
-    if (status === "on") {
-      setCrackToggleUI(true, "mic live — clap to test");
-      updateAudioMeter();
-    } else if (status === "calibrating") {
-      setCrackToggleUI(false, "stay quiet — calibrating…");
-    } else if (status === "denied") {
+  startCrackDetector();
+});
+
+// Mic picker wiring.
+(function () {
+  var sel = document.getElementById("mic-select");
+  if (sel) sel.addEventListener("change", function () {
+    saveMicDeviceId(sel.value);
+    if (crackDetector && crackDetector.isRunning()) {
+      crackDetector.stop();
       crackDetector = null;
-      setCrackToggleUI(false, "mic blocked — allow microphone");
-    } else if (status === "error") {
-      crackDetector = null;
-      setCrackToggleUI(false, "no mic on this device");
-    } else {
-      setCrackToggleUI(false, "");
+      startCrackDetector(); // still inside the change gesture
     }
   });
-});
+  var rescan = document.getElementById("mic-rescan");
+  if (rescan) rescan.addEventListener("click", function () { listMics(); });
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", function () { listMics(); });
+    }
+  } catch (e) {}
+})();
 
 /* ------------------------------------------------------------------ */
 /* Live session (no full recording by default).                        */
@@ -1511,11 +1590,13 @@ function selectLocal() {
   localInited = true;
   btnStart.disabled = true;
   listCameras(); // populate early (labels fill in after permission is granted)
+  listMics();
   initCamera().then(function () {
     btnStart.disabled = false;
     statusEl.textContent = "Camera live — swings show on TV, hit Save to log them";
     ensureLoop();
     listCameras(); // refresh: real device labels need the granted permission
+    listMics();
   }).catch(function () {
     statusEl.textContent = "Camera blocked — allow access and reload";
     document.getElementById("camera-hint").textContent =

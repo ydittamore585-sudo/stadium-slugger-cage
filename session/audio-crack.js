@@ -123,8 +123,10 @@ function createCrackDetector(onCrack) {
     }
   }
 
-  function start(cb) {
-    // cb(status) — "calibrating" | "on" | "denied" | "error" | "off"
+  function start(cb, deviceId) {
+    // cb(status) — "calibrating" | "on" | "denied" | "mic-gone" | "error" | "off"
+    // deviceId: optional exact mic to use (from the mic picker); without it
+    // the browser uses the OS default input.
     statusCb = cb || null;
     if (running) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -141,9 +143,11 @@ function createCrackDetector(onCrack) {
       ctx = new AC();
       if (ctx.state === "suspended") { try { ctx.resume(); } catch (e) {} }
     } catch (e) { setStatus("error"); return; }
-    navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-    }).then(function (s) {
+    var audioConstr = {
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false
+    };
+    if (deviceId) audioConstr.deviceId = { exact: deviceId };
+    navigator.mediaDevices.getUserMedia({ audio: audioConstr }).then(function (s) {
       stream = s;
       try {
         src = ctx.createMediaStreamSource(stream);
@@ -166,10 +170,16 @@ function createCrackDetector(onCrack) {
       maxBandE = 0;
       timer = setInterval(poll, POLL_MS);
       calibrate();
-    }, function () {
+    }, function (err) {
       try { if (ctx) ctx.close(); } catch (e) {}
       ctx = null;
-      setStatus("denied");
+      // Chosen mic vanished (unplugged)? Tell the page so it can forget the
+      // saved id and fall back to the default input.
+      if (deviceId && err && (err.name === "OverconstrainedError" || err.name === "NotFoundError")) {
+        setStatus("mic-gone");
+      } else {
+        setStatus("denied");
+      }
     });
   }
 
