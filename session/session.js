@@ -1237,6 +1237,18 @@ function downloadSession() {
     streamStart: state.streamStart || null,
     streamEnd: streamEnd,
     streamGaps: state.streamGaps || [],
+    // Self-diagnosis: if a future export ever shows zero swings again,
+    // this block says why (detections vs logged, saving state, camera).
+    diagnostics: {
+      detections: state.swingCount,
+      loggedSwings: state.swings.length,
+      wasSavingAtExport: !!state.recording,
+      cameraLive: (function () { try { return cameraLive(); } catch (e) { return null; } })(),
+      videoSize: (function () {
+        try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
+        catch (e) { return null; }
+      })()
+    },
     clipMime: state.clipMime || null,
     calibration: (function () {
       try {
