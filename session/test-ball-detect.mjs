@@ -85,7 +85,6 @@ var W = 640, H = 360, BG = 25;
     check("streak: >=5 points", trail.length >= 5, "got " + trail.length);
     var nStreak = trail.filter(function (p) { return p.via === "streak"; }).length;
     check("streak: points via streak", nStreak >= 5, nStreak + "/"+ trail.length + " via streak");
-    // Positions should track the true centers within a few px.
     var maxErr = 0;
     for (var k = 0; k < trail.length; k++) {
       var f = k + 1; // trail[0] is frame 1
@@ -187,6 +186,35 @@ var W = 640, H = 360, BG = 25;
   var st = detectStreakInFrame(frames[1].data, frames[0].data, frames[2].data,
     W, H, 0, W, 0, H);
   check("blob not streak", st === null, "streak fired on a compact blob");
+})();
+
+// --- Test 9: diag forensics are populated -------------------------------
+(function () {
+  // Positive case: dim moving streak (upper 2/3, unseeded fallback region).
+  var frames = [];
+  for (var f = 0; f < 7; f++) {
+    var fr = makeFrame(W, H, BG);
+    var cx = 100 + f * 80, cy = 200 - f * 20;
+    drawStreak(fr, cx - 25, cy - 25, cx + 25, cy + 25, 5, 110);
+    frames.push(fr);
+  }
+  var diag = {};
+  var trail = detectBallTrail(frames, W, H, null, null, diag);
+  check("diag: trail found", !!trail, "got null");
+  check("diag: framesSearched", diag.framesSearched === 5, "got " + diag.framesSearched);
+  check("diag: streakPoints", diag.streakPoints >= 5, "got " + diag.streakPoints);
+  check("diag: failReason null", diag.failReason === null, "got " + diag.failReason);
+  check("diag: bestStreakScore > 0", (diag.bestStreakScore || 0) > 0, "got " + diag.bestStreakScore);
+
+  // Negative case: empty frames — forensics must explain the miss.
+  var empty = [];
+  for (var f2 = 0; f2 < 7; f2++) empty.push(makeFrame(W, H, BG));
+  var d2 = {};
+  var t2 = detectBallTrail(empty, W, H, null, null, d2);
+  check("diag: empty -> null", t2 === null);
+  check("diag: empty failReason", !!d2.failReason, "no failReason");
+  check("diag: empty streakCandidates 0", d2.streakCandidates === 0,
+    "got " + d2.streakCandidates);
 })();
 
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");

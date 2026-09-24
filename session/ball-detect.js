@@ -41,12 +41,16 @@ var STREAK_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1]];
  * Find the best motion streak in one frame.
  * d/dp/dn: Uint8ClampedArray RGBA of frame t / t-1 / t+1.
  * (rx0,rx1,ry0,ry1): search window in full-res px.
+ * diag (optional): filled with forensics — candidates, bestAxisSum,
+ *   bestElong, bestScore — even when no streak passes.
  * Returns {x, y, ox, oy, len, score} or null.
  * (x,y) is the streak center; (ox,oy) the unit axis; len the window px.
  */
-function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
+function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag) {
   var best = null, bestScore = 0;
   var HL = STREAK_HALF;
+  // Forensics: how close did we get?
+  var candidates = 0, bestAxisSum = 0, bestElong = 0;
   for (var y = ry0; y < ry1; y += STREAK_STEP) {
     for (var x = rx0; x < rx1; x += STREAK_STEP) {
       var i = (y * W + x) * 4;
@@ -56,6 +60,7 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
       var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
       var motion = m1 < m2 ? m1 : m2;
       if (motion < STREAK_MOTION_MIN) continue; // must move, not a static edge
+      candidates++;
       // Brightness sums along the 4 orientations, HL px each way.
       var s0 = 0, s1 = 0, s2 = 0, s3 = 0;
       for (var k = -HL; k <= HL; k++) {
@@ -73,6 +78,9 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
       if (s2 > bs) { bi = 2; bs = s2; }
       if (s3 > bs) { bi = 3; bs = s3; }
       var perp = bi === 0 ? s2 : bi === 1 ? s3 : bi === 2 ? s0 : s1;
+      if (bs > bestAxisSum) bestAxisSum = bs;
+      var elong = perp > 0 ? bs / perp : 0;
+      if (elong > bestElong) bestElong = elong;
       if (bs < STREAK_SUM_MIN) continue;      // not substantial enough
       if (bs < STREAK_ELONG_MIN * perp) continue; // compact, not a streak
       var score = bs * (bright / 255);
@@ -82,11 +90,17 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
       }
     }
   }
+  if (diag) {
+    diag.streakCandidates = (diag.streakCandidates || 0) + candidates;
+    if (bestAxisSum > (diag.bestStreakAxisSum || 0)) diag.bestStreakAxisSum = Math.round(bestAxisSum);
+    if (bestElong > (diag.bestStreakElong || 0)) diag.bestStreakElong = +bestElong.toFixed(2);
+    if (bestScore > (diag.bestStreakScore || 0)) diag.bestStreakScore = Math.round(bestScore);
+  }
   if (!best) return null;
   return { x: best.x, y: best.y, ox: best.ox, oy: best.oy, len: HL * 2 + 1, score: bestScore };
 }
 
-function detectBallTrail(frames, W, H, seed, times) {
+function detectBallTrail(frames, W, H, seed, times, diag) {
   // Three-frame differencing + blob check, with streak fallback.
   // motion(x,y,t) = min(|I(t)-I(t-1)|, |I(t+1)-I(t)|): a pixel must differ
   // from BOTH neighbors, which rejects single-frame flashes (sensor noise,
@@ -101,6 +115,15 @@ function detectBallTrail(frames, W, H, seed, times) {
   // Seeded search: window around the centroid, biased upward — the ball
   // travels up/away after contact and would exit a centered window in
   // ~3 frames. No/fresh seed: full upper-2/3 fallback region.
+  //
+  // diag (optional): filled with per-swing forensics — framesSearched,
+  // blobPoints, streakPoints, bestBlobScore, streakCandidates,
+  // bestStreakAxisSum, bestStreakElong, bestStreakScore, failReason.
+  diag = diag || {};
+  diag.framesSearched = 0;
+  diag.blobPoints = 0;
+  diag.streakPoints = 0;
+  diag.bestBlobScore = 0;
   var rx0, rx1, ry0, ry1;
   if (seed) {
     var cx = seed.x * W, cy = seed.y * H;
@@ -114,6 +137,7 @@ function detectBallTrail(frames, W, H, seed, times) {
   }
   var trail = [];
   for (var f = 1; f < frames.length - 1; f++) {
+    diag.framesSearched++;
     var d = frames[f].data;
     var dp = frames[f - 1].data, dn = frames[f + 1].data;
     var t = (times && times[f] != null) ? times[f] : f / 30;
@@ -146,20 +170,26 @@ function detectBallTrail(frames, W, H, seed, times) {
     }
     if (best && bestScore > BALL_SCORE_GATE) {
       trail.push({ u: best.x, v: best.y, t: t, via: "blob" });
+      diag.blobPoints++;
+      if (bestScore > diag.bestBlobScore) diag.bestBlobScore = Math.round(bestScore);
     } else {
       // Fallback: the ball may be a motion-blurred streak, not a blob.
-      var st = detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1);
-      if (st) trail.push({ u: st.x, v: st.y, t: t, via: "streak" });
+      var st = detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag);
+      if (st) {
+        trail.push({ u: st.x, v: st.y, t: t, via: "streak" });
+        diag.streakPoints++;
+      }
     }
   }
   // Quality gates.
-  if (trail.length < 5) return null;
+  if (trail.length < 5) { diag.failReason = "too few points (" + trail.length + ")"; return null; }
   var dx = trail[trail.length-1].u - trail[0].u;
   var dy = trail[trail.length-1].v - trail[0].v;
   var disp = Math.sqrt(dx*dx + dy*dy);
-  if (disp < BALL_MIN_DISPLACEMENT_PX) return null;
+  if (disp < BALL_MIN_DISPLACEMENT_PX) { diag.failReason = "displacement " + disp.toFixed(1) + "px"; return null; }
   // Must move generally away (up in image = toward outfield).
-  if (dy > -4) return null;
+  if (dy > -4) { diag.failReason = "not moving up (dy=" + dy.toFixed(1) + ")"; return null; }
+  diag.failReason = null;
   return trail;
 }
 

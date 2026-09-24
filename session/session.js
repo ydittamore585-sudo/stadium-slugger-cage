@@ -365,10 +365,11 @@ function frameHash(img) {
   return h;
 }
 
-function trackBall(seed) {
+function trackBall(seed, diag) {
   // Capture UNIQUE frames for up to ~0.8 s of real ball flight.
   // requestVideoFrameCallback grabs on actual new presented frames;
   // the setTimeout fallback skips duplicates via frameHash.
+  // diag (optional): filled by detectBallTrail with per-swing forensics.
   var cap = document.createElement("canvas");
   cap.width = video.videoWidth; cap.height = video.videoHeight;
   var cctx = cap.getContext("2d", { willReadFrequently: true });
@@ -379,7 +380,7 @@ function trackBall(seed) {
     function finish() {
       if (done) return;
       done = true;
-      resolve(detectBallTrail(frames, cap.width, cap.height, seed, times));
+      resolve(detectBallTrail(frames, cap.width, cap.height, seed, times, diag));
     }
     // Watchdog: rVFC stops firing if the stream freezes, so the timeout
     // must not depend on grab() being called again.
@@ -721,11 +722,11 @@ function onSpike(spike) {
     if (clipRing[i].t >= preStart && clipRing[i].t <= tSpike) preChunks.push(clipRing[i]);
   }
   // Start ball tracking NOW — don't wait for validation.
-  var ballPromise = null;
+  var ballPromise = null, ballDiag = {};
   try {
-    if (motionSeed) ballPromise = trackBall(motionSeed);
+    if (motionSeed) ballPromise = trackBall(motionSeed, ballDiag);
   } catch (e) { ballPromise = null; }
-  pendingSpike = { spike: spike, preChunks: preChunks, ballPromise: ballPromise, tSpike: tSpike };
+  pendingSpike = { spike: spike, preChunks: preChunks, ballPromise: ballPromise, tSpike: tSpike, ballDiag: ballDiag };
 }
 
 function onSpikeRejected(ps) {
@@ -819,16 +820,19 @@ function logSwing(manual, ps) {
     swingEntry.motionSeed = seed ? { x: +seed.x.toFixed(3), y: +seed.y.toFixed(3) } : null;
   }
 
-  var ballPromise;
+  var ballPromise, ballDiag;
   if (ps && ps.ballPromise) {
     ballPromise = ps.ballPromise;
+    ballDiag = ps.ballDiag || {};
   } else {
-    try { ballPromise = trackBall(seed); } catch (e) { ballPromise = Promise.resolve(null); }
+    ballDiag = {};
+    try { ballPromise = trackBall(seed, ballDiag); } catch (e) { ballPromise = Promise.resolve(null); }
   }
   ballPromise.then(function (trail) {
     var result = analyzeSwing(trail);
     if (saving && swingEntry) {
       swingEntry.result = result;
+      swingEntry.ballDiag = ballDiag; // forensics: blob/streak points, gate margins
       state.swings.push(swingEntry);
       renderSwing(swingEntry);
     }
@@ -1486,7 +1490,8 @@ function downloadSession() {
         fitRmsePx: r.tracked ? r.fitRmsePx : null,
         fitModel: r.tracked ? r.fitModel : null,
         direction: r.tracked ? r.direction : null,
-        note: r.tracked ? r.note : r.reason
+        note: r.tracked ? r.note : r.reason,
+        ballDiag: s.ballDiag || null
       };
     })
   };
