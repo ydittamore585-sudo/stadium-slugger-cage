@@ -72,10 +72,18 @@ var CageCast = (function () {
     });
   }
 
+  var castRetries = 0;
   function initCast() {
     try {
       castContext = cast.framework.CastContext.getInstance();
     } catch (e) {
+      // SDK might not be loaded yet — retry a few times before giving up.
+      if (castRetries < 5) {
+        castRetries++;
+        log('Cast SDK not ready, retry ' + castRetries + '/5');
+        setTimeout(initCast, 2000);
+        return;
+      }
       log('Cast SDK not available in this browser');
       if (button) { button.disabled = true; button.textContent = '📺 Cast N/A'; }
       return;
