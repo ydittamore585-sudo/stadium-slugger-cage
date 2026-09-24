@@ -1014,6 +1014,36 @@
       if (lf.files && lf.files[0]) loadProfileFile(lf.files[0]);
       lf.value = "";
     };
+    // Tap-on-video: load a recorded clip into the preview so reference
+    // points can be tapped on paused, clear frames (zoom works the same).
+    // The video must be from the session camera position — the phone must
+    // not move between the video and the session.
+    var vf = $("calib-video-file"), lv = $("calib-live");
+    var savedStream = null, videoURL = null;
+    if (vf) vf.onchange = function () {
+      var v = videoEl();
+      if (!v || !vf.files || !vf.files[0]) return;
+      savedStream = v.srcObject;
+      if (videoURL) URL.revokeObjectURL(videoURL);
+      videoURL = URL.createObjectURL(vf.files[0]);
+      v.srcObject = null;
+      v.src = videoURL;
+      v.controls = true;
+      v.play().catch(function () {});
+      if (lv) lv.classList.remove("hidden");
+      setStatus("Video loaded — pause on a clear frame, then tap the points. The camera must stay where it was for the session.");
+      vf.value = "";
+    };
+    if (lv) lv.onclick = function () {
+      var v = videoEl();
+      if (!v) return;
+      if (videoURL) { URL.revokeObjectURL(videoURL); videoURL = null; }
+      v.src = "";
+      v.controls = false;
+      if (savedStream) { v.srcObject = savedStream; savedStream = null; }
+      lv.classList.add("hidden");
+      setStatus("Back on the live feed.");
+    };
     // A solved calibration survives refreshes: restore it so a patch-day
     // reload never forces a re-tap when the phone hasn't moved.
     restoreCalibration();

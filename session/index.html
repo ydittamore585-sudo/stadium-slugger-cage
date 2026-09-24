@@ -106,6 +106,11 @@
         📂 Load
         <input type="file" id="calib-load-file" accept=".json,application/json" style="display:none">
       </label>
+      <label class="btn ghost" style="cursor:pointer" title="Load a recorded video to tap calibration points on (pause on clear frames)">
+        📹 Tap video
+        <input type="file" id="calib-video-file" accept="video/*" style="display:none">
+      </label>
+      <button id="calib-live" class="btn ghost hidden" title="Back to the live camera feed">📡 Live</button>
       <button id="calib-close" class="btn ghost">Close</button>
     </div>
   </div>
@@ -171,14 +176,14 @@
 <script src="vendor/jsqr.min.js?v=20260920c"></script>
 <script src="vendor/lz-string.min.js?v=20260920c"></script>
 <script src="mqtt.js?v=20260920c"></script>
-<script src="cast.js?v=20260923c"></script>
-<script src="calib.js?v=20260920c"></script>
+<script src="cast.js?v=20260923d"></script>
+<script src="calib.js?v=20260923d"></script>
 <script src="webm-duration.js?v=20260920c"></script>
 <script src="swing-detect.js?v=20260920c"></script>
 <script src="audio-crack.js?v=20260921o"></script>
 <script src="clip-assemble.js?v=20260920c"></script>
-<script src="ball-detect.js?v=20260923c"></script>
-<script src="session.js?v=20260923c"></script>
+<script src="ball-detect.js?v=20260923d"></script>
+<script src="session.js?v=20260923d"></script>
 <script src="gopro-bridge.js?v=20260919e"></script>
 </body>
 </html>
