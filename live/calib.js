@@ -27,8 +27,8 @@
     { id: "door1", label: "Door 1 end (10.25 ft)", world: [10.25 * FT, 5 * FT] },
     { id: "door2", label: "Wall end (16.5 ft)", world: [16.5 * FT, 5 * FT] },
     { id: "door3", label: "Door 2 end (26.75 ft)", world: [26.75 * FT, 5 * FT] },
-    { id: "box-l", label: "Box inside edge L", world: [0, -1.5 * FT] },
-    { id: "box-r", label: "Box inside edge R", world: [0, 1.5 * FT] },
+    { id: "box-l", label: "Box inside L @ plate", world: [0, -1.5 * FT] },
+    { id: "box-r", label: "Box inside R @ plate", world: [0, 1.5 * FT] },
   ];
 
   var taps = {};          // id -> {u, v} in video pixels
@@ -999,9 +999,20 @@
 
   // Wire panel buttons once the DOM is ready.
   function wire() {
-    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file");
+    var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file"), cl = $("calib-clear");
     var hh = $("calib-height"), vb = $("calib-verify");
     if (s) s.onclick = solve;
+    if (cl) cl.onclick = function () {
+      taps = {};
+      profile = null;
+      hasSolvedProfile = false;
+      selectedId = REF_POINTS[0].id;
+      renderList();
+      drawMarkers();
+      s.disabled = true; a.disabled = true; sv.disabled = true;
+      setStatus("Cleared. Tap the reference points again.");
+      persistCalibration();
+    };
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;
     if (c) c.onclick = close;
