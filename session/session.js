@@ -770,6 +770,16 @@ function logSwing(manual, ps) {
   mSwings.textContent = state.swingCount;
   drawSwingMarker();
   beep(880, 150);
+  // Push the count to the TV on EVERY detection, even when not saving and
+  // even before the ball is tracked — so the cage sees the detector working.
+  // (The tracked push with exit velo / launch angle below updates it again
+  // when the ball flight is measured.)
+  if (window.CageCast && CageCast.isConnected()) {
+    CageCast.swing({
+      n: state.swingCount,
+      at: new Date().toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})
+    });
+  }
 
   // Freeze the saving decision at detection time: a swing spotted while
   // saving is on gets logged even if the user hits Done mid-track.
@@ -836,7 +846,8 @@ function logSwing(manual, ps) {
       state.swings.push(swingEntry);
       renderSwing(swingEntry);
     }
-    // Push to TV via CageCast — always, when connected and the ball was tracked.
+    // Push to TV via CageCast — update the swing with measured metrics.
+    // (The count-only push above already showed this swing on the TV.)
     if (window.CageCast && CageCast.isConnected() && result.tracked) {
       CageCast.swing({
         n: state.swingCount,

@@ -187,9 +187,13 @@ function detectBallTrail(frames, W, H, seed, times, diag) {
   var dy = trail[trail.length-1].v - trail[0].v;
   var disp = Math.sqrt(dx*dx + dy*dy);
   if (disp < BALL_MIN_DISPLACEMENT_PX) { diag.failReason = "displacement " + disp.toFixed(1) + "px"; return null; }
-  // Must move generally away (up in image = toward outfield).
-  if (dy > -4) { diag.failReason = "not moving up (dy=" + dy.toFixed(1) + ")"; return null; }
+  // NOTE: No vertical-direction gate. Field forensics (2026-09-23, session 29)
+  // showed the ball moving DOWN in the image (positive dy, 6-275px) on real
+  // cage footage — the "must move up" assumption was backwards for this camera
+  // angle. Displacement + motion gates are sufficient; direction is not a
+  // reliable ball-vs-not signal.
   diag.failReason = null;
+  diag.dy = +dy.toFixed(1); // forensics: which way did it go?
   return trail;
 }
 

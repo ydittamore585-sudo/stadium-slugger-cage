@@ -139,16 +139,21 @@ var W = 640, H = 360, BG = 25;
   check("empty: no trail", detectBallTrail(frames, W, H, null, null) === null);
 })();
 
-// --- Test 6: downward motion rejected (ball must go up/away) ----------
+// --- Test 6: downward motion ACCEPTED (field forensics 2026-09-23 showed
+// the ball moves down in the real cage camera image; the up-only gate was
+// backwards). Direction is not a ball-vs-not signal.
 (function () {
   var frames = [];
   for (var f = 0; f < 7; f++) {
     var fr = makeFrame(W, H, BG);
-    var cx = 60 + f * 80, cy = 100 + f * 3; // moving DOWN
+    var cx = 60 + f * 80, cy = 100 + f * 20; // moving DOWN (stays in H=360 fallback region)
     drawStreak(fr, cx - 25, cy, cx + 25, cy, 5, 110);
     frames.push(fr);
   }
-  check("downward: rejected", detectBallTrail(frames, W, H, null, null) === null);
+  var diag = {};
+  var trail = detectBallTrail(frames, W, H, null, null, diag);
+  check("downward: accepted", !!trail, "got null — dy=" + diag.dy);
+  if (trail) check("downward: dy positive", diag.dy > 0, "dy=" + diag.dy);
 })();
 
 // --- Test 7: vertical streak orientation ------------------------------
