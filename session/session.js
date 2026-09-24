@@ -1551,6 +1551,18 @@ function selectLocal() {
   setSrcActive("src-local");
   var hint = document.getElementById("camera-hint");
   if (hint && !remoteMode) hint.style.display = "";
+  // Show the calibration button for the laptop camera too (not just phone).
+  var calb = document.getElementById("btn-calibrate");
+  if (calb) {
+    calb.classList.remove("hidden");
+    calb.onclick = function () {
+      if (window.PhoneCalib) {
+        window.PhoneCalib.open();
+      } else {
+        setStatus("Calibration script didn't load — refresh the page (footer Refresh button).");
+      }
+    };
+  }
   if (localInited || remoteMode) return;
   localInited = true;
   btnStart.disabled = true;
