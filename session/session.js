@@ -354,7 +354,6 @@ function frameMotion() {
 /* ------------------------------------------------------------------ */
 var BALL_TRACK_FRAMES = 24;      // unique frames (~0.8 s at 30 fps of ball flight)
 var BALL_TRACK_TIMEOUT_MS = 3000;
-var BALL_MIN_DISPLACEMENT_PX = 8; // full-res px over the track
 
 // Cheap duplicate-frame detector: the phone stream often runs below
 // 30 fps, and three-frame differencing on duplicate frames sees zero
@@ -403,75 +402,8 @@ function trackBall(seed) {
   });
 }
 
-var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
-
-function detectBallTrail(frames, W, H, seed, times) {
-  // Three-frame differencing + blob check.
-  // motion(x,y,t) = min(|I(t)-I(t-1)|, |I(t+1)-I(t)|): a pixel must differ
-  // from BOTH neighbors, which rejects single-frame flashes (sensor noise,
-  // compression artifacts) and keeps consistently moving objects.
-  // A real ball is a small bright blob: 4-20 bright px in a 5x5 window.
-  // score = motion * (bright/255) * blobFactor; per-pixel max = 765*1*1.
-  // The old gate (>900) was mathematically impossible — no trail ever passed.
-  //
-  // seed = {x, y} motion centroid, 0-1 frame-normalized, < 5 s old.
-  // Seeded search: window around the centroid, biased upward — the ball
-  // travels up/away after contact and would exit a centered window in
-  // ~3 frames. No/fresh seed: full upper-2/3 fallback region.
-  var rx0, rx1, ry0, ry1;
-  if (seed) {
-    var cx = seed.x * W, cy = seed.y * H;
-    rx0 = Math.max(0, Math.floor(cx - 0.25 * W));
-    rx1 = Math.min(W, Math.ceil(cx + 0.25 * W));
-    ry0 = Math.max(0, Math.floor(cy - 0.35 * H));
-    ry1 = Math.min(H, Math.ceil(cy + 0.15 * H));
-  } else {
-    rx0 = Math.floor(W * 0.15); rx1 = Math.ceil(W * 0.85);
-    ry0 = Math.floor(H * 0.08); ry1 = Math.ceil(H * 0.65);
-  }
-  var trail = [];
-  for (var f = 1; f < frames.length - 1; f++) {
-    var d = frames[f].data;
-    var dp = frames[f - 1].data, dn = frames[f + 1].data;
-    var best = null, bestScore = 0;
-    for (var y = ry0; y < ry1; y += 3) {
-      for (var x = rx0; x < rx1; x += 3) {
-        var i = (y * W + x) * 4;
-        var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
-        if (bright < 140) continue; // ball is bright white
-        var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
-        var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
-        var motion = m1 < m2 ? m1 : m2;
-        if (motion < 60) continue; // must be moving across frames, not static
-        // Blob check: ball-sized bright cluster, not a speck or a wall.
-        var blob = 0;
-        for (var dy = -2; dy <= 2; dy++) {
-          var yy = y + dy;
-          if (yy < 0 || yy >= H) continue;
-          for (var dx = -2; dx <= 2; dx++) {
-            var xx = x + dx;
-            if (xx < 0 || xx >= W) continue;
-            var j = (yy * W + xx) * 4;
-            if ((d[j] + d[j + 1] + d[j + 2]) / 3 > 120) blob++;
-          }
-        }
-        if (blob < 4 || blob > 20) continue;
-        var score = motion * (bright / 255) * (blob < 10 ? blob / 10 : 1);
-        if (score > bestScore) { bestScore = score; best = { x: x, y: y }; }
-      }
-    }
-    if (best && bestScore > BALL_SCORE_GATE) trail.push({ u: best.x, v: best.y, t: (times && times[f] != null) ? times[f] : f / 30 });
-  }
-  // Quality gates.
-  if (trail.length < 5) return null;
-  var dx = trail[trail.length-1].u - trail[0].u;
-  var dy = trail[trail.length-1].v - trail[0].v;
-  var disp = Math.sqrt(dx*dx + dy*dy);
-  if (disp < BALL_MIN_DISPLACEMENT_PX) return null;
-  // Must move generally away (up in image = toward outfield).
-  if (dy > -4) return null;
-  return trail;
-}
+/* detectBallTrail + streak detector live in ball-detect.js (loaded before
+   this script); the trail format is unchanged. */
 
 /* ------------------------------------------------------------------ */
 /* Small linear algebra for the trajectory fits.                       */
