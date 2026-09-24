@@ -35,6 +35,9 @@
     <button id="btn-broadcast" class="src">📡 Phone: broadcast camera</button>
     <button id="btn-watch" class="src">📺 Laptop: watch phone</button>
   </div>
+  <div style="margin:0 0 12px;">
+    <button id="btn-calibrate" class="hidden" title="Tap known points to calibrate the camera">📐 Calibrate camera</button>
+  </div>
   <div id="camera-picker-row" style="display:flex;gap:8px;align-items:center;margin:0 0 12px;">
     <label for="camera-select" style="font-size:0.85rem;color:#9fb0d0;white-space:nowrap;">Camera:</label>
     <select id="camera-select" style="flex:1;min-width:0;padding:10px;border-radius:10px;border:2px solid #2a3350;background:#141b2e;color:#fff;font-size:0.85rem;">
@@ -85,7 +88,6 @@
     <button id="btn-cast-close">Close</button>
     <button id="btn-switch-cam" class="hidden" title="Flip between front and rear camera">⇄ Switch camera</button>
     <button id="btn-switch-cam-remote" class="hidden" title="Tell the phone to flip between front and rear camera">⇄ Switch phone camera</button>
-    <button id="btn-calibrate" class="hidden" title="Tap known points on the phone's live feed to calibrate">📐 Calibrate phone camera</button>
   </div>
 
   <div id="calib-panel" class="hidden">
@@ -176,14 +178,14 @@
 <script src="vendor/jsqr.min.js?v=20260920c"></script>
 <script src="vendor/lz-string.min.js?v=20260920c"></script>
 <script src="mqtt.js?v=20260920c"></script>
-<script src="cast.js?v=20260923e"></script>
-<script src="calib.js?v=20260923e"></script>
+<script src="cast.js?v=20260923f"></script>
+<script src="calib.js?v=20260923f"></script>
 <script src="webm-duration.js?v=20260920c"></script>
 <script src="swing-detect.js?v=20260920c"></script>
 <script src="audio-crack.js?v=20260921o"></script>
 <script src="clip-assemble.js?v=20260920c"></script>
-<script src="ball-detect.js?v=20260923e"></script>
-<script src="session.js?v=20260923e"></script>
+<script src="ball-detect.js?v=20260923f"></script>
+<script src="session.js?v=20260923f"></script>
 <script src="gopro-bridge.js?v=20260919e"></script>
 </body>
 </html>
