@@ -15,6 +15,7 @@
   "use strict";
 
   var FT = 0.3048;
+  var IN = 0.0254;
   var $ = function (id) { return document.getElementById(id); };
 
   // Reference points: id, label, world [x, y] in meters.
@@ -30,6 +31,24 @@
     { id: "box-l", label: "Box inside L @ plate", world: [0, -1.5 * FT] },
     { id: "box-r", label: "Box inside R @ plate", world: [0, 1.5 * FT] },
   ];
+  // Height refs (2026-09-24: Yancy — "add the height as click points like the
+  // doors"): top of bottom pane (47") and top of 2nd pane (69.5") at each door
+  // x-position, plus the 2' batting tee at the plate. Tapped like ground
+  // points; solve() converts them to a px/m height scale via the homography.
+  [0, 10.25, 16.5, 26.75].forEach(function (xft, i) {
+    REF_POINTS.push({
+      id: "hpane-lo-" + i, label: "📏 Pane low (47\") @ " + xft + " ft",
+      world: [xft * FT, 5 * FT], heightM: 47 * IN,
+    });
+    REF_POINTS.push({
+      id: "hpane-hi-" + i, label: "📏 Pane high (69.5\") @ " + xft + " ft",
+      world: [xft * FT, 5 * FT], heightM: 69.5 * IN,
+    });
+  });
+  REF_POINTS.push({
+    id: "tee-top", label: "📏 Tee top (2') @ plate",
+    world: [0, 0], heightM: 2 * FT,
+  });
 
   var taps = {};          // id -> {u, v} in video pixels
   var selectedId = null;
@@ -136,8 +155,10 @@
       box.appendChild(b);
     });
     var n = Object.keys(taps).length;
-    $("calib-count").textContent = n + " / " + REF_POINTS.length + " tapped";
-    $("calib-solve").disabled = n < 4;
+    var ng = 0;
+    REF_POINTS.forEach(function (rp) { if (taps[rp.id] && !rp.heightM) ng++; });
+    $("calib-count").textContent = n + " / " + REF_POINTS.length + " tapped (" + ng + " ground)";
+    $("calib-solve").disabled = ng < 4;
   }
 
   function videoPos(ev) {
@@ -198,21 +219,27 @@
   }
 
   function solve() {
-    var refs = [];
+    var refs = [], heightRefs = [];
     REF_POINTS.forEach(function (rp) {
       if (taps[rp.id]) {
         // solveHomography's contract is arrays: image:[u,v], world:[x,y].
         // Passing {u,v}/{x,y} objects silently trips its isFinite guard as
         // "non-finite coordinates" (r.image[0] is undefined). Never regress.
-        refs.push({
+        var entry = {
           id: rp.id,
           image: [taps[rp.id].u, taps[rp.id].v],
           world: [rp.world[0], rp.world[1]],
-        });
+        };
+        if (rp.heightM) {
+          entry.heightM = rp.heightM;
+          heightRefs.push(entry);
+        } else {
+          refs.push(entry);
+        }
       }
     });
     if (refs.length < 4) {
-      setStatus("Need at least 4 tapped points.");
+      setStatus("Need at least 4 tapped ground points (height 📏 points don't count for the ground solve).");
       return;
     }
     var res;
@@ -229,9 +256,40 @@
       return;
     }
     var meanPx = res.meanPx, maxPx = res.maxPx;
+    // Height scale from 📏 tap points: project each point's ground (x,y)
+    // through Hinv to image, measure px to the elevated tap, divide by
+    // known height. Median across samples for robustness.
+    // (2026-09-24: Yancy — height as tap points like the doors.)
+    var heightSamples = [];
+    if (res.Hinv) {
+      for (var hi = 0; hi < heightRefs.length; hi++) {
+        var hr = heightRefs[hi];
+        var g = applyHLocal(res.Hinv, hr.world[0], hr.world[1]);
+        if (g) {
+          var dpix = Math.hypot(hr.image[0] - g[0], hr.image[1] - g[1]);
+          if (dpix > 1 && hr.heightM > 0) {
+            heightSamples.push({
+              id: hr.id, pxPerM: dpix / hr.heightM,
+              px: Math.round(dpix), heightM: hr.heightM,
+            });
+          }
+        }
+      }
+    }
+    var heightScale = null;
+    if (heightSamples.length) {
+      var sorted = heightSamples.map(function (s) { return s.pxPerM; }).sort(function (a, b) { return a - b; });
+      var med = sorted[Math.floor(sorted.length / 2)];
+      heightScale = { pxPerM: med, samples: heightSamples, source: "pane taps" };
+      lastHeightScale = heightScale;
+    }
     var verdict = meanPx <= 6
       ? "Good — mean reprojection " + meanPx.toFixed(1) + " px (max " + maxPx.toFixed(1) + " px)."
       : "Poor — mean reprojection " + meanPx.toFixed(1) + " px. Re-tap more carefully (zoom in).";
+    if (heightScale) {
+      verdict += " Height: " + heightScale.pxPerM.toFixed(1) + " px/m from " +
+        heightSamples.length + " pane tap" + (heightSamples.length > 1 ? "s" : "") + ".";
+    }
     setStatus(verdict + " You can Apply anyway, but numbers will be shaky.");
     $("calib-apply").disabled = false;
     $("calib-save").disabled = false;
@@ -241,7 +299,7 @@
         cage: { lengthM: 30 * FT, widthM: 10 * FT },
         camera: { note: "mounted phone, position varies per session" },
         solveResult: res,
-        heightSamples: [],
+        heightSamples: heightSamples,
         verification: null,
         appVersion: "session",
         notes: "Laptop-side tap calibration on live phone feed.",
@@ -249,8 +307,9 @@
     } catch (e) {
       profile = { solveResult: res };
     }
-    // Step 12: carry a bat-measured height scale across re-solves —
-    // the mount didn't move, only the taps did.
+    // Step 12: carry the height scale across re-solves — the mount didn't
+    // move, only the taps did. lastHeightScale is the fresh tap result when
+    // 📏 points were tapped, else the carried-over value.
     if (lastHeightScale && profile && typeof profile === "object") {
       profile.heightScale = lastHeightScale;
     }
