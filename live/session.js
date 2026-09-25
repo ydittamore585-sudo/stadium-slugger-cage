@@ -1408,16 +1408,31 @@ function captureSwingClip(swingId, ps) {
     return;
   }
   var tTrigger = ps ? ps.tSpike : Date.now();
+  // Pre-roll chunks were preserved at spike time (ps.preChunks) — the ring
+  // is a sliding window and the swing's pre-roll may have been evicted by
+  // the time validation finishes. Use the preserved pre-chunks, then take
+  // only the post-trigger portion from the live ring.
+  // (2026-09-24: re-selecting pre-roll from the ring found nothing because
+  // ball-tracking validation took longer than the ring's history.)
+  var preservedPre = (ps && ps.preChunks && ps.preChunks.length) ? ps.preChunks.slice() : null;
   // Wait for post-roll to accumulate, then assemble.
   setTimeout(function () {
     try {
-      // Select chunks by TIME, not count. Pre-chunks were preserved at
-      // spike time; post-chunks are everything since the trigger.
       var t0 = tTrigger - CLIP_PREROLL_MS, t1 = tTrigger + CLIP_POSTROLL_MS;
       var sel = [];
-      for (var i = 0; i < clipRing.length; i++) {
-        var c = clipRing[i];
-        if (c.t >= t0 && c.t <= t1) sel.push(c);
+      if (preservedPre) {
+        // Use the spike-time pre-roll; add post-trigger chunks from the ring.
+        for (var i = 0; i < preservedPre.length; i++) sel.push(preservedPre[i]);
+        for (var j = 0; j < clipRing.length; j++) {
+          var pc = clipRing[j];
+          if (pc.t > tTrigger && pc.t <= t1) sel.push(pc);
+        }
+      } else {
+        // No preserved pre-roll (manual mark or old path): select by time.
+        for (var k = 0; k < clipRing.length; k++) {
+          var c = clipRing[k];
+          if (c.t >= t0 && c.t <= t1) sel.push(c);
+        }
       }
       if (!sel.length) {
         // Diagnose: is the recorder stalled? (2026-09-24: ring full of stale
