@@ -217,3 +217,7 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
 }
 #calib-verify-box .btn { margin-left: 6px; }
 #calib-verify-result { margin-top: 8px; }
+
+/* Clip status: visible failure reason when swing clips don't assemble (2026-09-24) */
+.clip-status { font-size: 13px; font-weight: 400; color: #94a3b8; margin-left: 8px; }
+.clip-status.error { color: #f87171; font-weight: 600; }

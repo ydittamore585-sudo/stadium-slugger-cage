@@ -1003,15 +1003,17 @@
     var hh = $("calib-height"), vb = $("calib-verify");
     if (s) s.onclick = solve;
     if (cl) cl.onclick = function () {
+      // Clear ONLY the current taps — the solved/applied profile stays intact.
+      // (2026-09-24: was also nulling profile + persisting null, which wiped
+      // the good calibration from localStorage.)
       taps = {};
-      profile = null;
-      hasSolvedProfile = false;
       selectedId = REF_POINTS[0].id;
       renderList();
       drawMarkers();
-      s.disabled = true; a.disabled = true; sv.disabled = true;
-      setStatus("Cleared. Tap the reference points again.");
-      persistCalibration();
+      s.disabled = true;
+      setStatus("Taps cleared. Tap the reference points again. Applied calibration unchanged.");
+      // Do NOT persist here — persistCalibration() would save profile:null
+      // and wipe the stored calibration. Taps are session state, not stored.
     };
     if (a) a.onclick = apply;
     if (sv) sv.onclick = save;

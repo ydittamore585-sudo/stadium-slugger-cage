@@ -925,6 +925,10 @@ document.getElementById("btn-clear-swings").addEventListener("click", function (
   mEV.textContent = "—";
   mLA.textContent = "—";
   swingLogEl.innerHTML = '<p class="empty">No swings yet. Take a cut.</p>';
+  // Reset the TV to a fresh session too (2026-09-24: Yancy asked for TV refresh on clear).
+  if (window.CageCast && CageCast.isConnected()) {
+    CageCast.session(cameraLive() ? 'live' : 'idle', 'New session');
+  }
 });
 
 function drawSwingMarker() {
@@ -1362,14 +1366,40 @@ function ensureClipRing() {
   if (state.stream && state.stream !== sessionRecorderStream) startClipRing();
 }
 
+// Last clip failure reason, shown in the UI so silent failures are visible.
+// (2026-09-24: clips were failing silently — Yancy reported "no video loading".)
+var lastClipError = null;
+function setClipError(reason) {
+  lastClipError = { reason: reason, at: new Date().toISOString() };
+  var el = document.getElementById("clip-status");
+  if (el) {
+    el.textContent = "Clip: " + reason;
+    el.className = "clip-status error";
+  }
+}
+function clearClipError() {
+  lastClipError = null;
+  var el = document.getElementById("clip-status");
+  if (el) {
+    el.textContent = "";
+    el.className = "clip-status";
+  }
+}
+
 // Capture a coaching clip: 4 s pre-roll (set, feet, step, load) + 2 s
 // post-roll (follow-through), assembled with structural verification.
 // ps: pending spike for auto (has preChunks); null for manual.
 function captureSwingClip(swingId, ps) {
   if (!clipToggle.checked) return;
   ensureClipRing();
-  if (!sessionRecorder || sessionRecorder.state === "inactive") return;
-  if (!clipHeaderChunk || !clipHeaderChunk.length) return; // no header, no clip
+  if (!sessionRecorder || sessionRecorder.state === "inactive") {
+    setClipError("recorder not running");
+    return;
+  }
+  if (!clipHeaderChunk || !clipHeaderChunk.length) {
+    setClipError("no video header — recorder produced no data");
+    return;
+  }
   var tTrigger = ps ? ps.tSpike : Date.now();
   // Wait for post-roll to accumulate, then assemble.
   setTimeout(function () {
@@ -1382,7 +1412,10 @@ function captureSwingClip(swingId, ps) {
         var c = clipRing[i];
         if (c.t >= t0 && c.t <= t1) sel.push(c);
       }
-      if (!sel.length) return;
+      if (!sel.length) {
+        setClipError("no video chunks in window (" + clipRing.length + " in ring)");
+        return;
+      }
       // Convert Blobs to Uint8Arrays for the assembler.
       var pending = sel.length, bufs = new Array(sel.length), failed = false;
       sel.forEach(function (c, idx) {
@@ -1398,7 +1431,10 @@ function captureSwingClip(swingId, ps) {
         try {
           var clip = assembleClip(clipHeaderChunk, bufs, tTrigger,
             CLIP_PREROLL_MS, CLIP_POSTROLL_MS, CLIP_MIN_MS);
-          if (!clip) return; // fail closed: no corrupt/still clips saved
+          if (!clip) {
+            setClipError("assembler rejected clip (corrupt or still frames)");
+            return;
+          }
           var blob = new Blob([clip.data], { type: "video/webm" });
           var fix = (typeof fixWebmDuration === "function")
             ? fixWebmDuration(blob, clip.durationMs)
@@ -1406,10 +1442,17 @@ function captureSwingClip(swingId, ps) {
           fix.then(function (fixed) {
             swingClips.push({ id: swingId, blob: fixed, durationMs: clip.durationMs });
             attachClipPlayer(swingId, fixed);
+            clearClipError();
+          }, function (err) {
+            setClipError("duration fix failed: " + (err && err.message || err));
           });
-        } catch (e) { /* clips are optional; never break the session */ }
+        } catch (e) {
+          setClipError("assembly threw: " + (e && e.message || e));
+        }
       }
-    } catch (e) { /* clips are optional; never break the session */ }
+    } catch (e) {
+      setClipError("clip capture threw: " + (e && e.message || e));
+    }
   }, CLIP_POSTROLL_MS);
 }
 
@@ -1475,7 +1518,10 @@ function downloadSession() {
       videoSize: (function () {
         try { return (video.videoWidth || 0) + "x" + (video.videoHeight || 0); }
         catch (e) { return null; }
-      })()
+      })(),
+      // Last clip failure (2026-09-24: clips were failing silently).
+      lastClipError: (function () { try { return lastClipError; } catch (e) { return null; } })(),
+      clipsAssembled: (function () { try { return swingClips.length; } catch (e) { return null; } })()
     },
     clipMime: state.clipMime || null,
     calibration: (function () {
