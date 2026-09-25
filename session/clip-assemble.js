@@ -210,14 +210,25 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
   var p = 0;
   for (k = 0; k < sel.length; k++) { media.set(sel[k].bytes, p); p += sel[k].bytes.length; }
 
+  // If the selection includes the first-ever chunk, it starts with the EBML
+  // header + init segment — skip to its first Cluster. (The init segment is
+  // already prepended above; leaving the header in the media body produces
+  // a structurally invalid file.)
+  // (2026-09-24: manual "Save video" dumps the whole ring including chunk 0,
+  // which the assembler rejected because the media began with EBML magic.)
+  var mOff = 0;
+  if (media.length >= 4 && media[0] === 0x1a && media[1] === 0x45 &&
+      media[2] === 0xdf && media[3] === 0xa3) {
+    var fc = findFirstCluster(media);
+    if (fc > 0) mOff = fc;
+  }
   // If the first selected chunk starts with a Cluster ID, drop it — we're
   // wrapping in our own cluster header (avoids nested clusters).
-  var mOff = 0;
-  if (media.length >= 4 && media[0] === 0x1f && media[1] === 0x43 &&
-      media[2] === 0xb6 && media[3] === 0x75) {
-    var cSz = parseSize(media, 4);
+  if (media.length >= mOff + 4 && media[mOff] === 0x1f && media[mOff + 1] === 0x43 &&
+      media[mOff + 2] === 0xb6 && media[mOff + 3] === 0x75) {
+    var cSz = parseSize(media, mOff + 4);
     if (cSz) {
-      mOff = 4 + cSz.len;
+      mOff = mOff + 4 + cSz.len;
       // Also skip its Timecode child if present (we supply our own).
       var tId = parseId(media, mOff);
       if (tId && tId.val === TIMECODE_ID) {
