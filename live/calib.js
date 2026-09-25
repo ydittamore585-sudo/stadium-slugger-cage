@@ -965,6 +965,22 @@
     }
   }
 
+  // Invert a 3x3 matrix (for Hinv when loading a saved homography).
+  function invert3(m) {
+    var a = m[0][0], b = m[0][1], c = m[0][2],
+        d = m[1][0], e = m[1][1], f = m[1][2],
+        g = m[2][0], h = m[2][1], i = m[2][2];
+    var A = e*i - f*h, B = f*g - d*i, C = d*h - e*g;
+    var det = a*A + b*B + c*C;
+    if (!det) throw new Error("singular matrix");
+    var inv = 1/det;
+    return [
+      [A*inv, (c*h - b*i)*inv, (b*f - c*e)*inv],
+      [B*inv, (a*i - c*g)*inv, (c*d - a*f)*inv],
+      [C*inv, (b*g - a*h)*inv, (a*e - b*d)*inv]
+    ];
+  }
+
   function loadProfileFile(file) {
     if (!file) return;
     var rd = new FileReader();
@@ -977,7 +993,36 @@
         }
         profile = p;
         var n = p.refPatches.patches.length;
-        setStatus("Loaded profile with " + n + " reference patches (" + (p.label || p.notes || "saved calibration") + "). Hit Auto-adjust.");
+        // If the file carries a solved homography, use it directly — don't
+        // force auto-adjust (which fails if lighting/camera shifted).
+        // (2026-09-24: Load was setting profile but never pushing H to the
+        // session, so "load calibration" silently did nothing.)
+        var H = null;
+        try {
+          H = p.profile && p.profile.homography && p.profile.homography.imageToGround;
+        } catch (e) { H = null; }
+        if (H && H.length === 3) {
+          try {
+            window.SessionApp = window.SessionApp || {};
+            // Invert H for ground->image (needed by the overlay).
+            var Hinv = invert3(H);
+            window.SessionApp.phoneCalibration = {
+              H: H, Hinv: Hinv,
+              meanPx: (p.profile.verification && p.profile.verification.meanPx) || 6.0,
+              maxPx: (p.profile.verification && p.profile.verification.maxPx) || 11.0,
+              numPoints: n,
+              verified: false,
+              label: p.profile.label || "loaded from file"
+            };
+            window.SessionApp.manualCalibration = window.SessionApp.phoneCalibration;
+            hasSolvedProfile = true;
+            setStatus("Loaded calibration with " + n + " points — homography applied. No need to retap unless the camera moved.");
+          } catch (e) {
+            setStatus("Loaded profile with " + n + " reference patches, but couldn't apply the homography: " + (e && e.message || e) + ". Hit Auto-adjust.");
+          }
+        } else {
+          setStatus("Loaded profile with " + n + " reference patches (" + (p.label || p.notes || "saved calibration") + "). Hit Auto-adjust.");
+        }
         var ab = $("calib-auto");
         if (ab) ab.disabled = false;
         persistCalibration();
