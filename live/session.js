@@ -748,7 +748,7 @@ function finishManualVideo(bufs) {
     var now = Date.now();
     var clip = assembleClip(clipHeaderChunk, bufs, now, 60000, 2000, null);
     if (!clip) {
-      setClipError("manual video: assembler rejected the buffered video");
+      setClipError("manual video: " + (assembleClip.lastReason || "assembler rejected the buffered video"));
       return;
     }
     var blob = new Blob([clip.data], { type: "video/webm" });
@@ -1545,7 +1545,7 @@ function captureSwingClip(swingId, ps) {
           var clip = assembleClip(clipHeaderChunk, bufs, tTrigger,
             CLIP_PREROLL_MS, CLIP_POSTROLL_MS, CLIP_MIN_MS);
           if (!clip) {
-            setClipError("assembler rejected clip (corrupt or still frames)");
+            setClipError("auto clip: " + (assembleClip.lastReason || "assembler rejected clip"));
             return;
           }
           var blob = new Blob([clip.data], { type: "video/webm" });

@@ -188,12 +188,16 @@ function walkUnknownCluster(u8, off) {
  * Returns {data: Uint8Array, durationMs, mediaStartMs} or null.
  */
 function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
-  if (!headerBytes || !headerBytes.length || !chunks || !chunks.length) return null;
+  assembleClip.lastReason = "";
+  function reject(why) { assembleClip.lastReason = why; return null; }
+  if (!headerBytes || !headerBytes.length || !chunks || !chunks.length)
+    return reject("empty input (header " + (headerBytes && headerBytes.length) +
+      "b, " + (chunks && chunks.length) + " chunks)");
   var initEnd = findFirstCluster(headerBytes);
-  if (initEnd < 0) return null;
+  if (initEnd < 0) return reject("no cluster in header chunk");
   var initSeg = headerBytes.subarray(0, initEnd);
   var clusterHeader = synthClusterHeader(headerBytes, initEnd);
-  if (!clusterHeader) return null;
+  if (!clusterHeader) return reject("synthClusterHeader failed");
 
   var t0 = tTrigger - preMs, t1 = tTrigger + postMs;
   var sel = [];
@@ -201,7 +205,9 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
     var c = chunks[i];
     if (c.t >= t0 && c.t <= t1 && c.bytes && c.bytes.length) sel.push(c);
   }
-  if (!sel.length) return null;
+  if (!sel.length) return reject("no chunks in window [" + Math.round(t0) + "," +
+    Math.round(t1) + "] of " + chunks.length + " (t " +
+    Math.round(chunks[0].t) + "–" + Math.round(chunks[chunks.length-1].t) + ")");
 
   // Concatenate selected media (raw blocks, possibly starting mid-cluster).
   var total = 0, k;
@@ -239,7 +245,8 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
   }
 
   var mediaEnd = verifiedMediaEnd(media, mOff);
-  if (mediaEnd <= mOff) return null;
+  if (mediaEnd <= mOff) return reject("media verify failed at offset " + mOff +
+    " of " + media.length + "b (" + sel.length + " chunks selected)");
 
   var out = new Uint8Array(initSeg.length + clusterHeader.length + (mediaEnd - mOff));
   out.set(initSeg, 0);
@@ -251,10 +258,12 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
   var firstT = sel[0].t, lastT = sel[sel.length - 1].t;
   var avgInterval = sel.length > 1 ? (lastT - firstT) / (sel.length - 1) : 500;
   var durationMs = (lastT - firstT) + avgInterval;
-  if (minMs != null && durationMs < minMs) return null;
+  if (minMs != null && durationMs < minMs)
+    return reject("duration " + Math.round(durationMs) + "ms < min " + minMs + "ms");
 
   return { data: out, durationMs: Math.round(durationMs), mediaStartMs: firstT };
 }
+assembleClip.lastReason = "";
 
 // Session-stamped filename: swing-20260918-193022-03.webm — no more
 // "swing-1 (12)" collisions across sessions.
