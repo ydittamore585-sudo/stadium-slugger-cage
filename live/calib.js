@@ -819,12 +819,14 @@
     var ii = buildIntegral(frame.data, frame.w, frame.h);
     var found = [];
     var total = rp.patches.length;
+    var attempts = []; // per-patch diagnostics (2026-09-24: "0 of 8" told us nothing)
     for (var i = 0; i < total; i++) {
       var p = rp.patches[i];
       setStatus("Auto-adjust: matching point " + (i + 1) + "/" + total + " (" + p.id + ")…");
       var patch = base64ToBytes(p.patch);
       var st = patchStats(patch);
       var m = nccMatch(frame, ii, patch, st.mean, st.norm, p.refU, p.refV, SEARCH_RADIUS);
+      attempts.push({ id: p.id, peak: m.peak, margin: m.margin });
       if (m.peak >= 0.75 && m.margin >= 1.15) {
         found.push({
           id: p.id,
@@ -836,7 +838,15 @@
       }
     }
     if (found.length < 4) {
-      setStatus("Auto-adjust failed: only " + found.length + " of " + total + " points matched confidently (need 4+). Lighting or camera moved too much — tap manually.");
+      // Show the best peaks so it's clear whether we're close or in a different universe.
+      attempts.sort(function (a, b) { return b.peak - a.peak; });
+      var det = attempts.slice(0, 3).map(function (a) {
+        return a.id + " " + a.peak.toFixed(2) + "/" + a.margin.toFixed(2);
+      }).join(", ");
+      setStatus("Auto-adjust failed: only " + found.length + " of " + total + " matched (need 4+, bar 0.75/1.15). Best: " + det + ". " +
+        (attempts[0] && attempts[0].peak < 0.5
+          ? "Different camera/viewpoint — retap manually."
+          : "So close — try better light or wipe the lens, then retry."));
       return;
     }
     // Gate: implied shift < 150px at full res (mean centroid shift)
