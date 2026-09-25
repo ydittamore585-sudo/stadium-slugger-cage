@@ -1300,6 +1300,8 @@ var sessionRecorderStream = null;
 var clipHeaderChunk = null;  // first chunk = EBML header (Uint8Array); saved
                              // separately so mid-ring clips get a valid init
 var clipRing = [];           // [{blob, t}] — t = Date.now() at arrival
+var lastChunkT = 0;          // Date.now() of last ondataavailable (stall detector)
+var lastRecorderError = null; // last MediaRecorder onerror
 
 function pickSupportedMime() {
   var cands = [
@@ -1328,9 +1330,12 @@ function startClipRing() {
     sessionRecorderStream = state.stream;
     clipRing = [];
     clipHeaderChunk = null;
+    lastChunkT = 0;
+    lastRecorderError = null;
     sessionRecorder.ondataavailable = function (e) {
       if (e.data && e.data.size) {
         var entry = { blob: e.data, t: Date.now() };
+        lastChunkT = entry.t;
         if (!clipHeaderChunk) {
           // First chunk has the EBML header — stash its bytes separately.
           // (Read once; the ring keeps the Blob for potential reuse.)
@@ -1342,7 +1347,9 @@ function startClipRing() {
         while (clipRing.length > CLIP_RING_MAX) clipRing.shift();
       }
     };
-    sessionRecorder.onerror = function () { /* ring is best-effort */ };
+    sessionRecorder.onerror = function (ev) {
+      lastRecorderError = (ev && ev.error && ev.error.name) || "recorder error";
+    };
     sessionRecorder.start(CLIP_CHUNK_MS);
   } catch (e) {
     sessionRecorder = null;
@@ -1413,7 +1420,20 @@ function captureSwingClip(swingId, ps) {
         if (c.t >= t0 && c.t <= t1) sel.push(c);
       }
       if (!sel.length) {
-        setClipError("no video chunks in window (" + clipRing.length + " in ring)");
+        // Diagnose: is the recorder stalled? (2026-09-24: ring full of stale
+        // chunks, none in window — recorder stopped producing data.)
+        var now = Date.now();
+        var newestAge = clipRing.length ? now - clipRing[clipRing.length-1].t : -1;
+        var stalled = lastChunkT && (now - lastChunkT > 3000);
+        if (stalled) {
+          // Restart the recorder; this swing's clip is lost but the next will work.
+          try { startClipRing(); } catch (e) {}
+          setClipError("recorder stalled (last chunk " + Math.round((now-lastChunkT)/1000) + "s ago" +
+            (lastRecorderError ? ", " + lastRecorderError : "") + ") — restarted, next swing should clip");
+        } else {
+          setClipError("no video chunks in window (" + clipRing.length + " in ring" +
+            (newestAge >= 0 ? ", newest " + Math.round(newestAge/1000) + "s old" : "") + ")");
+        }
         return;
       }
       // Convert Blobs to Uint8Arrays for the assembler.
