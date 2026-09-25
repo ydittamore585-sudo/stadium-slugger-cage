@@ -705,6 +705,79 @@ document.getElementById("btn-sound").addEventListener("click", function (ev) {
   if (soundOn) beep(880, 120);
 });
 
+// Manual video download: dump the whole ring buffer (~12 s) to a .webm
+// file. No swing detection, no timing windows — just the raw recent video.
+// (2026-09-24: Yancy asked for this — the auto clip pipeline kept missing.)
+document.getElementById("btn-manual-video").addEventListener("click", function () {
+  downloadManualVideo();
+});
+function downloadManualVideo() {
+  ensureClipRing();
+  if (!sessionRecorder || sessionRecorder.state === "inactive") {
+    setClipError("manual video: recorder not running — start the camera feed first");
+    return;
+  }
+  if (!clipHeaderChunk || !clipHeaderChunk.length) {
+    setClipError("manual video: recorder produced no data yet — wait a few seconds");
+    return;
+  }
+  if (!clipRing.length) {
+    setClipError("manual video: no video buffered yet — wait a few seconds");
+    return;
+  }
+  var chunks = clipRing.slice();
+  var pending = chunks.length, bufs = new Array(chunks.length), failed = false;
+  chunks.forEach(function (c, idx) {
+    var rd = new FileReader();
+    rd.onload = function () {
+      bufs[idx] = { bytes: new Uint8Array(rd.result), t: c.t };
+      if (--pending === 0 && !failed) finishManualVideo(bufs);
+    };
+    rd.onerror = function () {
+      if (!failed) {
+        failed = true;
+        setClipError("manual video: couldn't read buffered video (chunk " + (idx + 1) + " unreadable)");
+      }
+    };
+    rd.readAsArrayBuffer(c.blob);
+  });
+}
+function finishManualVideo(bufs) {
+  try {
+    // Wide window: take everything currently buffered.
+    var now = Date.now();
+    var clip = assembleClip(clipHeaderChunk, bufs, now, 60000, 2000, null);
+    if (!clip) {
+      setClipError("manual video: assembler rejected the buffered video");
+      return;
+    }
+    var blob = new Blob([clip.data], { type: "video/webm" });
+    var fix = (typeof fixWebmDuration === "function")
+      ? fixWebmDuration(blob, clip.durationMs)
+      : Promise.resolve(blob);
+    fix.then(function (fixed) {
+      var d = new Date();
+      function p(n, w) { n = String(n); while (n.length < w) n = "0" + n; return n; }
+      var name = "cage-manual-" + d.getFullYear() + p(d.getMonth() + 1, 2) + p(d.getDate(), 2) +
+        "-" + p(d.getHours(), 2) + p(d.getMinutes(), 2) + p(d.getSeconds(), 2) + ".webm";
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(fixed);
+      a.download = name;
+      a.click();
+      clearClipError();
+      var el = document.getElementById("clip-status");
+      if (el) {
+        el.textContent = "Video saved: " + name + " (" + (clip.durationMs / 1000).toFixed(1) + "s)";
+        el.className = "clip-status";
+      }
+    }, function (err) {
+      setClipError("manual video: duration fix failed: " + (err && err.message || err));
+    });
+  } catch (e) {
+    setClipError("manual video: " + (e && e.message || e));
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Swing pipeline: two-stage recognition                               */
 /*  1. SPIKE (immediate): motion signature starts. Preserve pre-roll   */
@@ -1459,7 +1532,12 @@ function captureSwingClip(swingId, ps) {
           bufs[idx] = { bytes: new Uint8Array(rd.result), t: c.t };
           if (--pending === 0 && !failed) assemble();
         };
-        rd.onerror = function () { failed = true; };
+        rd.onerror = function () {
+          if (!failed) {
+            failed = true;
+            setClipError("couldn't read buffered video (chunk " + (idx + 1) + " of " + sel.length + " unreadable)");
+          }
+        };
         rd.readAsArrayBuffer(c.blob);
       });
       function assemble() {
