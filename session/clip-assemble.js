@@ -22,6 +22,13 @@
  *     the post-roll wait.
  *  6. Fail closed: returns null when there isn't enough valid media —
  *     no "just a picture" clips.
+ *  7. Timestamp rebase (2026-09-26): concatenated chunks hold multiple
+ *     original clusters, each with its own Timecode. Every block
+ *     timestamp is rewritten to one continuous timeline starting at 0
+ *     and ALL original cluster headers/Timecodes are stripped — the
+ *     file carries a single synthesized cluster. Without this, later
+ *     clusters' timestamps jump ~100 s ahead and the player freezes on
+ *     a still frame after ~3 s.
  *
  * Pure module: Uint8Array in, Uint8Array out. No DOM.
  */
@@ -93,28 +100,19 @@ function findFirstCluster(u8) {
 }
 
 // Build a synthesized Cluster header: Cluster ID + unknown size +
-// the Timecode element copied from the header chunk's first cluster.
-// MediaRecorder chunks don't align to cluster boundaries, so a mid-ring
-// selection starts with raw blocks. Wrapping them in a fresh cluster
-// keeps the file structurally valid; block timestamps stay relative to
-// the original Timecode, preserving their spacing.
-function synthClusterHeader(headerBytes, initEnd) {
-  var cData = initEnd + 4; // after Cluster ID
-  var sz = parseSize(headerBytes, cData);
-  if (!sz) return null;
-  var child = cData + sz.len;
-  var tId = parseId(headerBytes, child);
-  if (!tId || tId.val !== TIMECODE_ID) return null;
-  var tSz = parseSize(headerBytes, child + tId.len);
-  if (!tSz || tSz.unknown) return null;
-  var tEnd = child + tId.len + tSz.len + tSz.val;
-  if (tEnd > headerBytes.length) return null;
-  var timecodeEl = headerBytes.subarray(child, tEnd);
-  var out = new Uint8Array(4 + 8 + timecodeEl.length);
+// a Timecode=0 element. Media block timestamps are rebased to a single
+// continuous timeline starting at 0 (see rebaseMediaTimestamps), so the
+// cluster Timecode MUST be 0 — copying the header chunk's original
+// Timecode here would offset the whole timeline.
+// (2026-09-26: the old code copied the header chunk's Timecode while
+// later embedded clusters kept their own Timecode bases — a ~100 s
+// discontinuity that played as 3 s of video then a still frame.)
+function synthClusterHeader() {
+  var out = new Uint8Array(4 + 8 + 3);
   out[0] = 0x1f; out[1] = 0x43; out[2] = 0xb6; out[3] = 0x75; // Cluster ID
   out[4] = 0x01; // unknown size
   for (var i = 5; i < 12; i++) out[i] = 0xff;
-  out.set(timecodeEl, 12);
+  out[12] = 0xe7; out[13] = 0x81; out[14] = 0x00; // Timecode = 0
   return out;
 }
 
@@ -204,6 +202,25 @@ function findClusterBoundary(u8, from) {
   return -1;
 }
 
+// Read the Timecode value (ms) of the verified cluster at cb. cb must be
+// a verified cluster boundary (ID + parseable size + Timecode child, as
+// findClusterBoundary returns). Returns the Timecode, or null when the
+// child isn't a well-formed Timecode element.
+function readClusterTimecode(u8, cb) {
+  var cSz = parseSize(u8, cb + 4);
+  if (!cSz) return null;
+  var off = cb + 4 + cSz.len;
+  var tId = parseId(u8, off);
+  if (!tId || tId.val !== TIMECODE_ID) return null;
+  var tSz = parseSize(u8, off + tId.len);
+  if (!tSz || tSz.unknown || tSz.val > 8) return null;
+  var tEnd = off + tId.len + tSz.len + tSz.val;
+  if (tEnd > u8.length) return null;
+  var tc = 0;
+  for (var j = 0; j < tSz.val; j++) tc = tc * 256 + u8[off + tId.len + tSz.len + j];
+  return tc;
+}
+
 // Advance past a verified cluster's header (ID + size) and its Timecode
 // child, so the media body is raw blocks. cb must come from
 // findClusterBoundary. The caller wraps the blocks in its own
@@ -218,6 +235,162 @@ function skipClusterHeader(u8, cb) {
   }
   return off;
 }
+
+function readInt16BE(u8, off) {
+  var v = (u8[off] << 8) | u8[off + 1];
+  return (v & 0x8000) ? v - 0x10000 : v;
+}
+
+function writeInt16BE(u8, off, v) {
+  u8[off] = (v >> 8) & 0xff;
+  u8[off + 1] = v & 0xff;
+}
+
+// Rebase every block timestamp in [mOff, mediaEnd) onto ONE continuous
+// timeline and return ONLY the media block bytes — every original Cluster
+// ID/size/Timecode byte is stripped. The caller wraps the result in a
+// single synthesized cluster (Timecode 0).
+//
+// Why (2026-09-26, real field bug — "plays 3 s then a still frame"):
+// concatenated ring chunks contain MULTIPLE original MediaRecorder
+// clusters, each with its own Timecode. Wrapping them under one header
+// while later clusters kept their original Timecode bases produced a
+// ~100 s timestamp discontinuity: the player rendered the first blocks
+// then held a still frame waiting for timestamps that never arrived.
+//
+// Walk: the region is element-aligned (verifiedMediaEnd), so parseId at
+// each step sees true elements — no byte-pattern false positives. The
+// leading raw blocks (before the first embedded cluster) belong to the
+// cluster that was open when the selection started:
+//   - leadTimecode != null: mOff was a verified boundary whose Timecode
+//     was read before its header was dropped — exact base.
+//   - else: estimated from the cluster cadence, U_0 - (U_1 - U_0); with
+//     fewer than 2 clusters there is only one time base, so no collision
+//     is possible and the original relative timestamps are kept.
+// Each block's absolute time = clusterTimecode + relTs; the emitted
+// timestamp is abs - minAbs, so the timeline starts at 0 with no
+// negatives. A monotonic clamp keeps timestamps non-decreasing even if
+// the cadence estimate is slightly off.
+// Returns a Uint8Array, or null (fail closed) when there are no blocks
+// or a rebased timestamp would overflow the int16 block-timestamp field.
+function rebaseMediaTimestamps(u8, mOff, mediaEnd, leadTimecode) {
+  rebaseMediaTimestamps.lastReason = "";
+  // Pass 1: original cluster Timecodes, in walk order.
+  var clusters = [];
+  var cur = mOff, guard = 0;
+  while (cur < mediaEnd && guard++ < 200000) {
+    var id = parseId(u8, cur);
+    if (!id) break;
+    if (id.val === CLUSTER_ID) {
+      var tc = readClusterTimecode(u8, cur);
+      if (tc == null) break;
+      clusters.push({ off: cur, timecode: tc });
+      var after = skipClusterHeader(u8, cur);
+      if (after <= cur) break; // no progress: stop, don't spin
+      cur = after;
+    } else {
+      var sz = parseSize(u8, cur + id.len);
+      if (!sz || sz.unknown) break;
+      var eEnd = cur + id.len + sz.len + sz.val;
+      if (eEnd <= cur || eEnd > mediaEnd) break;
+      cur = eEnd;
+    }
+  }
+  // Time base for the leading raw blocks (see above).
+  var seg0Base;
+  if (leadTimecode != null) seg0Base = leadTimecode;
+  else if (clusters.length >= 2 && clusters[1].timecode > clusters[0].timecode)
+    seg0Base = clusters[0].timecode - (clusters[1].timecode - clusters[0].timecode);
+  else seg0Base = clusters.length ? clusters[0].timecode : 0;
+
+  // Pass 2: collect blocks with their absolute times. Cluster headers and
+  // Timecode children are dropped; Void padding passes through untouched.
+  var blocks = []; // {off, len, tsOff (-1 = no timestamp), abs}
+  cur = mOff; guard = 0;
+  var curTc = seg0Base, totalBytes = 0;
+  while (cur < mediaEnd && guard++ < 200000) {
+    var bId = parseId(u8, cur);
+    if (!bId) break;
+    if (bId.val === CLUSTER_ID) {
+      var ctc = readClusterTimecode(u8, cur);
+      if (ctc == null) break;
+      curTc = ctc;
+      cur = skipClusterHeader(u8, cur);
+      continue;
+    }
+    var bSz = parseSize(u8, cur + bId.len);
+    if (!bSz || bSz.unknown) break;
+    var bEnd = cur + bId.len + bSz.len + bSz.val;
+    if (bEnd <= cur || bEnd > mediaEnd) break;
+    if (bId.val === 0xa3 || bId.val === 0xa1) {
+      // SimpleBlock / Block: timestamp is int16 BE right after the
+      // 1-byte track number.
+      var pay = cur + bId.len + bSz.len;
+      if (bSz.val >= 4) {
+        blocks.push({ off: cur, len: bEnd - cur, tsOff: pay + 1,
+          abs: curTc + readInt16BE(u8, pay + 1) });
+        totalBytes += bEnd - cur;
+      }
+    } else if (bId.val === 0xa0) {
+      // BlockGroup: patch the child Block's timestamp.
+      var gEnd = bEnd, gc = cur + bId.len + bSz.len, gGuard = 0;
+      var tsOff = -1, rel = 0;
+      while (gc < gEnd && gGuard++ < 20) {
+        var cId = parseId(u8, gc);
+        var cSz = cId && parseSize(u8, gc + cId.len);
+        if (!cId || !cSz || cSz.unknown) break;
+        var cEnd = gc + cId.len + cSz.len + cSz.val;
+        if (cEnd > gEnd) break;
+        if (cId.val === 0xa1 && cSz.val >= 4) {
+          tsOff = gc + cId.len + cSz.len + 1;
+          rel = readInt16BE(u8, tsOff);
+          break;
+        }
+        gc = cEnd;
+      }
+      if (tsOff >= 0) {
+        blocks.push({ off: cur, len: bEnd - cur, tsOff: tsOff,
+          abs: curTc + rel });
+        totalBytes += bEnd - cur;
+      }
+      // A BlockGroup without a patchable Block can't be rebased: drop it.
+    } else if (bId.val === 0xec) {
+      blocks.push({ off: cur, len: bEnd - cur, tsOff: -1, abs: 0 });
+      totalBytes += bEnd - cur;
+    }
+    // Anything else at top level (a stray Timecode, unknown ids):
+    // dropped — it can't be placed on the timeline.
+    cur = bEnd;
+  }
+  var timed = blocks.filter(function (b) { return b.tsOff >= 0; });
+  if (!timed.length) {
+    rebaseMediaTimestamps.lastReason = "no timestamped blocks in [" +
+      mOff + "," + mediaEnd + ")";
+    return null;
+  }
+  var minAbs = timed[0].abs;
+  for (var i = 1; i < timed.length; i++) if (timed[i].abs < minAbs) minAbs = timed[i].abs;
+  var out = new Uint8Array(totalBytes);
+  var p = 0, prev = -1;
+  for (var k = 0; k < blocks.length; k++) {
+    var b = blocks[k], ts = -1;
+    if (b.tsOff >= 0) {
+      ts = b.abs - minAbs;
+      if (ts < prev) ts = prev; // monotonic clamp (estimate safety)
+      if (ts > 32000) {
+        rebaseMediaTimestamps.lastReason = "rebased timestamp " + ts +
+          "ms exceeds the int16 block-timestamp range";
+        return null;
+      }
+      prev = ts;
+    }
+    out.set(u8.subarray(b.off, b.off + b.len), p);
+    if (b.tsOff >= 0) writeInt16BE(out, p + (b.tsOff - b.off), ts);
+    p += b.len;
+  }
+  return out;
+}
+rebaseMediaTimestamps.lastReason = "";
 
 // Fallback when no cluster boundary exists ahead (e.g. a window inside a
 // single-cluster recording): the first offset beginning 2+ consecutive
@@ -313,8 +486,7 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
   var initEnd = findFirstCluster(headerBytes);
   if (initEnd < 0) return reject("no cluster in header chunk");
   var initSeg = headerBytes.subarray(0, initEnd);
-  var clusterHeader = synthClusterHeader(headerBytes, initEnd);
-  if (!clusterHeader) return reject("synthClusterHeader failed");
+  var clusterHeader = synthClusterHeader();
 
   var t0 = tTrigger - preMs, t1 = tTrigger + postMs;
   var sel = [];
@@ -346,10 +518,18 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
     if (fc > 0) mOff = fc;
   }
   // If the media starts with a verified cluster boundary (aligned chunk,
-  // or the header chunk's own cluster after the EBML split), drop its
-  // header + Timecode child — we wrap the raw blocks in our own
-  // synthesized cluster header, and nested clusters are invalid WebM.
+  // or the header chunk's own cluster after the EBML split), read its
+  // Timecode BEFORE dropping the header + Timecode child — the leading
+  // blocks belong to this cluster and their timestamps are relative to
+  // it. We wrap the raw blocks in our own synthesized cluster header,
+  // and nested clusters are invalid WebM.
+  // (2026-09-26: the old code dropped this header without reading the
+  // Timecode, then wrapped the blocks under Timecode 0 while later
+  // embedded clusters kept their original Timecode bases — a ~100 s
+  // discontinuity that played as 3 s of video then a still frame.)
+  var leadTimecode = null;
   if (findClusterBoundary(media, mOff) === mOff) {
+    leadTimecode = readClusterTimecode(media, mOff);
     mOff = skipClusterHeader(media, mOff);
   }
   // Start media at the first verifiable offset.
@@ -371,7 +551,10 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
     if (cb >= 0) {
       // Skip the cluster header + its Timecode child — we wrap the raw
       // blocks in our own synthesized cluster header (avoids nested
-      // clusters).
+      // clusters). The bytes before cb are dropped, so the media now
+      // starts AT this cluster: its Timecode is the exact base for the
+      // leading blocks' relative timestamps.
+      leadTimecode = readClusterTimecode(media, cb);
       mOff = skipClusterHeader(media, cb);
     } else {
       var er = findElementRun(media, mOff);
@@ -386,10 +569,19 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
     " of " + media.length + "b (" + sel.length + " chunks selected); first bytes: " +
     hexBytes(media, mOff, 16) + "; " + describeId(media, mOff));
 
-  var out = new Uint8Array(initSeg.length + clusterHeader.length + (mediaEnd - mOff));
+  // Rebase every block timestamp onto one continuous timeline starting
+  // at 0 and strip ALL original cluster headers/Timecodes. Without this,
+  // each original cluster's blocks keep timestamps relative to their own
+  // Timecode while sharing one synthesized header — a timestamp
+  // discontinuity the player renders as a still frame.
+  var rebased = rebaseMediaTimestamps(media, mOff, mediaEnd, leadTimecode);
+  if (!rebased) return reject("timestamp rebase failed: " +
+    rebaseMediaTimestamps.lastReason);
+
+  var out = new Uint8Array(initSeg.length + clusterHeader.length + rebased.length);
   out.set(initSeg, 0);
   out.set(clusterHeader, initSeg.length);
-  out.set(media.subarray(mOff, mediaEnd), initSeg.length + clusterHeader.length);
+  out.set(rebased, initSeg.length + clusterHeader.length);
 
   // Honest duration: from first selected chunk's timestamp to last,
   // plus one average chunk interval (chunks cover [t, t+interval)).
@@ -422,6 +614,8 @@ if (typeof module !== "undefined" && module.exports) {
     skipClusterHeader: skipClusterHeader,
     findElementRun: findElementRun,
     selectClipWindow: selectClipWindow,
+    rebaseMediaTimestamps: rebaseMediaTimestamps,
+    readClusterTimecode: readClusterTimecode,
     hexBytes: hexBytes,
     describeId: describeId,
     synthClusterHeader: synthClusterHeader

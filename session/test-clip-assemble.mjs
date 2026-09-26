@@ -119,19 +119,17 @@ check("cluster ID at split",
     check("mid-block split fails closed (acceptable)", true);
   }
   // Pure timestamp-selection check: fake chunks with valid single-block bytes.
-  // Use the first real SimpleBlock from the good clip as the payload.
-  var blkStart = -1;
-  for (var s = 65536; s < 90000; s++) {
-    if (good[s] === 0xa3 && good[s + 1] === 0x82) { blkStart = s; break; }
-  }
-  if (blkStart > 0) {
-    var blkEnd = blkStart + 2 + (good[blkStart + 1] & 0x7f);
-    // find full block end via size
+  // Use the first genuine SimpleBlock after the first cluster's header
+  // (deterministic — a byte-pattern scan can land on a 2-byte false
+  // positive inside video data, which carries no timestamp to rebase).
+  var fc0 = asm.findFirstCluster(good);
+  var blkStart = fc0 > 0 ? asm.skipClusterHeader(good, fc0) : -1;
+  if (blkStart > 0 && good[blkStart] === 0xa3) {
     var b1 = good[blkStart + 1], ln = 1;
     while (ln <= 8 && !(b1 & (0x80 >> (ln - 1)))) ln++;
     var vv = b1 & (0xff >> ln);
     for (var j = 1; j < ln; j++) vv = vv * 256 + good[blkStart + 1 + j];
-    blkEnd = blkStart + 1 + ln + vv;
+    var blkEnd = blkStart + 1 + ln + vv;
     var oneBlock = good.subarray(blkStart, blkEnd);
     var tChunks = [];
     for (var k = 0; k < 10; k++) tChunks.push({ bytes: oneBlock, t: (k + 1) * 500 });
@@ -274,6 +272,176 @@ check("window selects nothing -> null",
   // The old Bug A shape (no tSpike) must not silently select garbage.
   var selBad = asm.selectClipWindow(preChunks, ring, undefined, 4000, 2000);
   check("undefined trigger selects nothing", selBad.length === 0, "got " + selBad.length);
+})();
+
+// --- 2026-09-26: timestamp rebase (field bug: "3 s then still frame") -
+// Concatenated ring chunks hold MULTIPLE original clusters, each with its
+// own Timecode. Wrapping them under one synthesized header kept later
+// clusters' original Timecode bases -> a ~100 s discontinuity -> freeze.
+// The assembler must rebase every block onto one continuous timeline and
+// strip ALL original cluster headers/Timecodes.
+
+// Synthetic EBML builders (payloads are zeros, so the cluster-ID byte
+// pattern can never appear by chance inside block data).
+function encBlock(ts) { // SimpleBlock, track 1, no lacing, 8 zero payload bytes
+  var b = [0xa3, 0x8c, 0x81, (ts >> 8) & 0xff, ts & 0xff, 0x00];
+  for (var i = 0; i < 8; i++) b.push(0);
+  return b;
+}
+function encCluster(timecode, relTsList) {
+  var b = [0x1f, 0x43, 0xb6, 0x75, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+  if (timecode < 256) b = b.concat([0xe7, 0x81, timecode]);
+  else b = b.concat([0xe7, 0x82, (timecode >> 8) & 0xff, timecode & 0xff]);
+  relTsList.forEach(function (ts) { b = b.concat(encBlock(ts)); });
+  return new Uint8Array(b);
+}
+function concatU8(parts) {
+  var n = 0, i;
+  for (i = 0; i < parts.length; i++) n += parts[i].length;
+  var out = new Uint8Array(n), p = 0;
+  for (i = 0; i < parts.length; i++) { out.set(parts[i], p); p += parts[i].length; }
+  return out;
+}
+function countPattern(u8, p0, p1, p2, p3) {
+  var n = 0;
+  for (var i = 0; i + 4 <= u8.length; i++)
+    if (u8[i] === p0 && u8[i + 1] === p1 && u8[i + 2] === p2 && u8[i + 3] === p3) n++;
+  return n;
+}
+// Walk SimpleBlocks from an element-aligned start; stops at a Cluster ID
+// (nested cluster = bug) or at non-block data. Returns {ts, end}.
+function walkBlockTs(u8, start) {
+  var ts = [], cur = start, guard = 0;
+  while (cur < u8.length && guard++ < 100000) {
+    var id = u8[cur];
+    if (id === 0x1f) break; // cluster ID byte: nested cluster, stop
+    if (id !== 0xa3 && id !== 0xa0 && id !== 0xec) break;
+    var b = u8[cur + 1], ln = 1;
+    while (ln <= 8 && !(b & (0x80 >> (ln - 1)))) ln++;
+    var v = b & (0xff >> ln);
+    for (var j = 1; j < ln; j++) v = v * 256 + u8[cur + 1 + j];
+    var pay = cur + 1 + ln;
+    if (id === 0xa3 && v >= 4) {
+      var t = (u8[pay + 1] << 8) | u8[pay + 2];
+      ts.push(t & 0x8000 ? t - 0x10000 : t);
+    }
+    cur = pay + v;
+  }
+  return { ts: ts, end: cur };
+}
+function isMonotonic(ts) {
+  for (var i = 1; i < ts.length; i++) if (ts[i] < ts[i - 1]) return false;
+  return true;
+}
+function maxGap(ts) {
+  var g = 0;
+  for (var i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] > g) g = ts[i] - ts[i - 1];
+  return g;
+}
+
+(function () {
+  // 3 original clusters at Timecodes 0/500/1000, SimpleBlocks at rel 0/33.
+  var media = concatU8([encCluster(0, [0, 33]), encCluster(500, [0, 33]), encCluster(1000, [0, 33])]);
+  var EXPECT = [0, 33, 500, 533, 1000, 1033];
+
+  // Case A: media starts AT a cluster boundary (lead Timecode known exactly,
+  // as when assembleClip skips the header chunk's own cluster header).
+  var mOffA = asm.skipClusterHeader(media, 0);
+  var leadA = asm.readClusterTimecode(media, 0);
+  check("synthetic: lead Timecode reads 0", leadA === 0, "got " + leadA);
+  var rbA = asm.rebaseMediaTimestamps(media, mOffA, media.length, leadA);
+  check("synthetic case A rebases", !!rbA, asm.rebaseMediaTimestamps.lastReason);
+  if (rbA) {
+    var wA = walkBlockTs(rbA, 0);
+    check("synthetic case A: continuous timeline",
+      JSON.stringify(wA.ts) === JSON.stringify(EXPECT), JSON.stringify(wA.ts));
+    check("synthetic case A: zero nested cluster IDs",
+      countPattern(rbA, 0x1f, 0x43, 0xb6, 0x75) === 0);
+  }
+
+  // Case B: media starts mid-cluster (raw blocks, Timecode unknown) —
+  // the mid-ring field shape. Cadence estimate must still yield a
+  // continuous, monotonic timeline.
+  var mediaB = media.subarray(mOffA);
+  var rbB = asm.rebaseMediaTimestamps(mediaB, 0, mediaB.length, null);
+  check("synthetic case B rebases", !!rbB, asm.rebaseMediaTimestamps.lastReason);
+  if (rbB) {
+    var wB = walkBlockTs(rbB, 0);
+    check("synthetic case B: continuous timeline",
+      JSON.stringify(wB.ts) === JSON.stringify(EXPECT), JSON.stringify(wB.ts));
+    check("synthetic case B: monotonic", isMonotonic(wB.ts));
+  }
+
+  // Case C: end-to-end through assembleClip — one synthesized cluster,
+  // no nested cluster IDs anywhere in the file.
+  var headerBytes = good.subarray(0, 65536);
+  var clip = asm.assembleClip(headerBytes, [{ bytes: media, t: 1000 }],
+    1000, 100000, 100000, 0);
+  check("synthetic end-to-end assembles", !!clip, asm.assembleClip.lastReason);
+  if (clip) {
+    var ms = asm.findFirstCluster(clip.data);
+    check("synthetic clip: init + cluster at 135", ms === 135, "at " + ms);
+    var wC = walkBlockTs(clip.data, ms + 15); // 15 = synthesized header
+    check("synthetic clip: continuous timeline",
+      JSON.stringify(wC.ts) === JSON.stringify(EXPECT), JSON.stringify(wC.ts));
+    check("synthetic clip: exactly one cluster ID in the file",
+      countPattern(clip.data, 0x1f, 0x43, 0xb6, 0x75) === 1,
+      "found " + countPattern(clip.data, 0x1f, 0x43, 0xb6, 0x75));
+    check("synthetic clip: walker consumed all blocks",
+      wC.end >= clip.data.length - 4, "stopped at " + wC.end + " of " + clip.data.length);
+  }
+})();
+
+// --- 2026-09-26: the actual frozen field file --------------------------
+// Yancy's 5.4 MB manual video played ~3 s then held a still frame.
+(function () {
+  var FROZEN = "/home/hatch/workspace/user/media_library/video/80/80e3151a3d4d69970c7ac75f622ca726469196238450bfa42a37f0e9284bda15.webm";
+  var fr;
+  try { fr = new Uint8Array(readFileSync(FROZEN)); }
+  catch (e) { check("frozen field file present", false, "missing fixture"); return; }
+
+  // Pre-fix evidence, parsed from the shipped bytes: adjacent clusters
+  // whose Timecodes jump ~100 s — the discontinuity the player choked on.
+  var tcs = [], off = 0, prevCb = -1;
+  for (var g = 0; g < 10; g++) {
+    var cb = asm.findClusterBoundary(fr, off);
+    if (cb < 0 || cb === prevCb) break;
+    prevCb = cb;
+    tcs.push(asm.readClusterTimecode(fr, cb));
+    off = cb + 1;
+  }
+  check("frozen file has 3 clusters", tcs.length === 3, JSON.stringify(tcs));
+  check("frozen file: ~100 s Timecode discontinuity (the freeze)",
+    tcs.length === 3 && (tcs[1] - tcs[0]) > 100000,
+    tcs.length === 3 ? (tcs[0] + " -> " + tcs[1]) : "n/a");
+
+  // Post-fix: feed the file's media back through the assembler the way
+  // production does (header chunk + raw media chunk starting mid-cluster).
+  var headerBytes = fr.subarray(0, 150); // init (135) + cluster header (15)
+  check("frozen file: header chunk splits init/media",
+    asm.findFirstCluster(headerBytes) === 135);
+  var clip = asm.assembleClip(headerBytes, [{ bytes: fr.subarray(150), t: 0 }],
+    0, 100000, 100000, 0);
+  check("frozen media re-assembles with rebased timestamps", !!clip,
+    asm.assembleClip.lastReason);
+  if (clip) {
+    var ms = asm.findFirstCluster(clip.data);
+    var w = walkBlockTs(clip.data, ms + 15);
+    check("rebuilt clip: dozens of blocks recovered", w.ts.length > 50,
+      "got " + w.ts.length);
+    check("rebuilt clip: timestamps monotonic", isMonotonic(w.ts));
+    check("rebuilt clip: no timestamp jump over 2 s (was ~100 s)",
+      maxGap(w.ts) < 2000, "max gap " + maxGap(w.ts) + "ms");
+    var span = w.ts.length ? w.ts[w.ts.length - 1] - w.ts[0] : 0;
+    check("rebuilt clip: timeline spans the ~12 s video",
+      span > 5000 && span < 20000, span + "ms");
+    check("rebuilt clip: walker reached the end (no nested cluster stopped it)",
+      w.end >= clip.data.length - 100,
+      "stopped at " + w.end + " of " + clip.data.length);
+    try {
+      require("fs").writeFileSync("/tmp/rebuilt-rebased.webm", Buffer.from(clip.data));
+    } catch (e) {}
+  }
 })();
 
 console.log(failures ? "\n" + failures + " FAILURES" : "\nall pass");
