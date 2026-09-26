@@ -618,6 +618,122 @@ if (typeof module !== "undefined" && module.exports) {
     readClusterTimecode: readClusterTimecode,
     hexBytes: hexBytes,
     describeId: describeId,
-    synthClusterHeader: synthClusterHeader
+    synthClusterHeader: synthClusterHeader,
+    crc32Bytes: crc32Bytes,
+    zipBuild: zipBuild,
+    zipCreate: zipCreate
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* Minimal dependency-free ZIP writer (stored entries only).           */
+/* Used by "Download all swings (.zip)": one user gesture, one file,  */
+/* so the browser's multiple-automatic-downloads policy can never      */
+/* block it. WebM is already compressed — stored (method 0) is the   */
+/* right call; no deflate needed. Filenames are ASCII, so no UTF-8    */
+/* flag. Sizes are 32-bit (clips are ~MB, nowhere near 4 GB).         */
+/*                                                                    */
+/* zipBuild(entries) -> { parts: [Uint8Array...], byteLength }.       */
+/*   entries: [{ name: string, data: Uint8Array }].                    */
+/*   parts alternate local-header/data and end with the central       */
+/*   directory + end-of-central-directory. The browser wraps them in  */
+/*   new Blob(parts) with NO big concatenation (peak memory ~1x the   */
+/*   clips instead of 2x).                                            */
+/* zipCreate(entries) -> Uint8Array: the same zip concatenated (for   */
+/*   tests and other non-browser use).                                */
+/* ------------------------------------------------------------------ */
+var CRC32_TABLE = null;
+function crc32Table() {
+  if (CRC32_TABLE) return CRC32_TABLE;
+  var t = new Uint32Array(256), c, k;
+  for (var n = 0; n < 256; n++) {
+    c = n;
+    for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  CRC32_TABLE = t;
+  return t;
+}
+function crc32Bytes(u8) {
+  var t = crc32Table(), crc = 0xFFFFFFFF, i;
+  for (i = 0; i < u8.length; i++) crc = t[(crc ^ u8[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function zipEncName(name) {
+  // ASCII filenames only (swing-YYYYMMDD-HHMMSS-NN.webm). Anything else
+  // is replaced rather than mis-encoded.
+  var out = new Uint8Array(name.length), i, c;
+  for (i = 0; i < name.length; i++) {
+    c = name.charCodeAt(i);
+    out[i] = c < 128 ? c : 95; // "_" for non-ASCII
+  }
+  return out;
+}
+function zipWriteU16(u8, off, v) { u8[off] = v & 0xFF; u8[off + 1] = (v >>> 8) & 0xFF; }
+function zipWriteU32(u8, off, v) {
+  u8[off] = v & 0xFF; u8[off + 1] = (v >>> 8) & 0xFF;
+  u8[off + 2] = (v >>> 16) & 0xFF; u8[off + 3] = (v >>> 24) & 0xFF;
+}
+function zipBuild(entries) {
+  var parts = [], i, e, nameBytes, lh, cd, crc, off = 0;
+  var centrals = [];
+  for (i = 0; i < entries.length; i++) {
+    e = entries[i];
+    nameBytes = zipEncName(e.name);
+    crc = crc32Bytes(e.data);
+    lh = new Uint8Array(30 + nameBytes.length);
+    zipWriteU32(lh, 0, 0x04034B50);
+    zipWriteU16(lh, 4, 20);          // version needed
+    zipWriteU16(lh, 6, 0);           // flags
+    zipWriteU16(lh, 8, 0);           // method: stored
+    zipWriteU16(lh, 10, 0);          // mod time
+    zipWriteU16(lh, 12, 0);          // mod date
+    zipWriteU32(lh, 14, crc);
+    zipWriteU32(lh, 18, e.data.length);
+    zipWriteU32(lh, 22, e.data.length);
+    zipWriteU16(lh, 26, nameBytes.length);
+    zipWriteU16(lh, 28, 0);          // extra length
+    lh.set(nameBytes, 30);
+    cd = new Uint8Array(46 + nameBytes.length);
+    zipWriteU32(cd, 0, 0x02014B50);
+    zipWriteU16(cd, 4, 20);          // version made by
+    zipWriteU16(cd, 6, 20);          // version needed
+    zipWriteU16(cd, 8, 0);           // flags
+    zipWriteU16(cd, 10, 0);          // method: stored
+    zipWriteU16(cd, 12, 0);          // mod time
+    zipWriteU16(cd, 14, 0);          // mod date
+    zipWriteU32(cd, 16, crc);
+    zipWriteU32(cd, 20, e.data.length);
+    zipWriteU32(cd, 24, e.data.length);
+    zipWriteU16(cd, 28, nameBytes.length);
+    zipWriteU16(cd, 30, 0);          // extra length
+    zipWriteU16(cd, 32, 0);          // comment length
+    zipWriteU16(cd, 34, 0);          // disk number
+    zipWriteU16(cd, 36, 0);          // internal attrs
+    zipWriteU32(cd, 38, 0);          // external attrs
+    zipWriteU32(cd, 42, off);        // local header offset
+    cd.set(nameBytes, 46);
+    parts.push(lh, e.data);
+    centrals.push(cd);
+    off += lh.length + e.data.length;
+  }
+  var cdOff = off, cdSize = 0;
+  for (i = 0; i < centrals.length; i++) { parts.push(centrals[i]); cdSize += centrals[i].length; }
+  off += cdSize;
+  var eocd = new Uint8Array(22);
+  zipWriteU32(eocd, 0, 0x06054B50);
+  zipWriteU16(eocd, 4, 0);           // this disk
+  zipWriteU16(eocd, 6, 0);           // cd start disk
+  zipWriteU16(eocd, 8, entries.length);
+  zipWriteU16(eocd, 10, entries.length);
+  zipWriteU32(eocd, 12, cdSize);
+  zipWriteU32(eocd, 16, cdOff);
+  zipWriteU16(eocd, 20, 0);          // comment length
+  parts.push(eocd);
+  return { parts: parts, byteLength: off + 22 };
+}
+function zipCreate(entries) {
+  var b = zipBuild(entries), out = new Uint8Array(b.byteLength), p = 0, i;
+  for (i = 0; i < b.parts.length; i++) { out.set(b.parts[i], p); p += b.parts[i].length; }
+  return out;
 }

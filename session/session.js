@@ -843,102 +843,70 @@ document.getElementById("btn-sound").addEventListener("click", function (ev) {
   if (soundOn) beep(880, 120);
 });
 
-// Manual video download: dump the whole ring buffer (~12 s) to a .webm
-// file. No swing detection, no timing windows — just the raw recent video.
-// (2026-09-24: Yancy asked for this — the auto clip pipeline kept missing.)
-document.getElementById("btn-manual-video").addEventListener("click", function () {
-  downloadManualVideo();
+// "Download all swings (.zip)": pack every captured swing clip into one
+// ZIP and download it with a single user gesture. One gesture, one file —
+// the browser's multiple-automatic-downloads policy can never block it.
+// (2026-09-26: per-clip auto-downloads were silently blocked while the app
+// marked them saved anyway — 45 clips assembled, 0 reached disk. Yancy
+// expected this button to hand him his swings; now it does.)
+document.getElementById("btn-download-swings").addEventListener("click", function () {
+  downloadSwingsZip();
 });
-function downloadManualVideo() {
-  ensureClipRing();
-  if (!sessionRecorder || sessionRecorder.state === "inactive") {
-    setClipError("manual video: recorder not running — start the camera feed first");
+function downloadSwingsZip() {
+  if (!swingClips.length) {
+    setClipError("No swing clips yet — they appear here as swings are detected");
     return;
   }
-  if (!clipHeaderChunk || !clipHeaderChunk.length || !clipRing.length) {
-    // Cold recorder (just started at camera-live or after a stream
-    // switch): wait for the first chunks instead of erroring
-    // immediately. (2026-09-26: "recorder produced no data yet" on a
-    // healthy camera — the recorder was seconds old.)
-    waitForClipData(0);
-    return;
+  var statusEl = document.getElementById("clip-status");
+  function status(msg) {
+    if (statusEl) { statusEl.textContent = msg; statusEl.className = "clip-status"; }
   }
-  dumpManualVideo();
-}
-
-// Poll for the first buffered chunks on a just-started recorder; give
-// up honestly after MANUAL_VIDEO_WAIT_MS.
-var MANUAL_VIDEO_WAIT_MS = 6000;
-function waitForClipData(elapsedMs) {
-  if (!sessionRecorder || sessionRecorder.state === "inactive") {
-    setClipError("manual video: recorder stopped while waiting");
-    return;
-  }
-  if (clipHeaderChunk && clipHeaderChunk.length && clipRing.length) {
-    dumpManualVideo();
-    return;
-  }
-  if (elapsedMs >= MANUAL_VIDEO_WAIT_MS) {
-    setClipError("manual video: recorder produced no data yet — wait a few seconds");
-    return;
-  }
-  var el = document.getElementById("clip-status");
-  if (el) { el.textContent = "Video: waiting for recorder…"; el.className = "clip-status"; }
-  setTimeout(function () { waitForClipData(elapsedMs + 500); }, 500);
-}
-
-function dumpManualVideo() {
-  var chunks = clipRing.slice();
-  var pending = chunks.length, bufs = new Array(chunks.length), failed = false;
-  chunks.forEach(function (c, idx) {
+  var entries = [], i = 0, total = swingClips.length;
+  function readNext() {
+    if (i >= total) { buildZip(); return; }
+    var c = swingClips[i];
+    status("Zipping swing " + (i + 1) + "/" + total + "…");
     var rd = new FileReader();
     rd.onload = function () {
-      bufs[idx] = { bytes: new Uint8Array(rd.result), t: c.t };
-      if (--pending === 0 && !failed) finishManualVideo(bufs);
+      entries.push({
+        name: (typeof clipFileName === "function")
+          ? clipFileName(state.sessionStart, c.id)
+          : "swing-" + c.id + ".webm",
+        data: new Uint8Array(rd.result)
+      });
+      i++;
+      readNext(); // sequential: never hold more than one unread copy at a time
     };
     rd.onerror = function () {
-      if (!failed) {
-        failed = true;
-        setClipError("manual video: couldn't read buffered video (chunk " + (idx + 1) + " unreadable)");
-      }
+      setClipError("couldn't read swing " + c.id + " clip — zip stopped at " +
+        i + "/" + total);
     };
     rd.readAsArrayBuffer(c.blob);
-  });
-}
-function finishManualVideo(bufs) {
-  try {
-    // Wide window: take everything currently buffered.
-    var now = Date.now();
-    var clip = assembleClip(clipHeaderChunk, bufs, now, 60000, 2000, null);
-    if (!clip) {
-      setClipError("manual video: " + (assembleClip.lastReason || "assembler rejected the buffered video"));
-      return;
-    }
-    var blob = new Blob([clip.data], { type: "video/webm" });
-    var fix = (typeof fixWebmDuration === "function")
-      ? fixWebmDuration(blob, clip.durationMs)
-      : Promise.resolve(blob);
-    fix.then(function (fixed) {
-      var d = new Date();
-      function p(n, w) { n = String(n); while (n.length < w) n = "0" + n; return n; }
-      var name = "cage-manual-" + d.getFullYear() + p(d.getMonth() + 1, 2) + p(d.getDate(), 2) +
-        "-" + p(d.getHours(), 2) + p(d.getMinutes(), 2) + p(d.getSeconds(), 2) + ".webm";
-      var a = document.createElement("a");
-      a.href = URL.createObjectURL(fixed);
-      a.download = name;
-      a.click();
-      clearClipError();
-      var el = document.getElementById("clip-status");
-      if (el) {
-        el.textContent = "Video saved: " + name + " (" + (clip.durationMs / 1000).toFixed(1) + "s)";
-        el.className = "clip-status";
-      }
-    }, function (err) {
-      setClipError("manual video: duration fix failed: " + (err && err.message || err));
-    });
-  } catch (e) {
-    setClipError("manual video: " + (e && e.message || e));
   }
+  function buildZip() {
+    try {
+      // zipBuild returns small parts; new Blob(parts) skips one big
+      // concatenation — peak memory stays ~1x the clips, not 2x.
+      var built = zipBuild(entries);
+      var blob = new Blob(built.parts, { type: "application/zip" });
+      var d = state.sessionStart || new Date();
+      function p(n, w) { n = String(n); while (n.length < w) n = "0" + n; return n; }
+      var name = "cage-swings-" + d.getFullYear() + p(d.getMonth() + 1, 2) + p(d.getDate(), 2) +
+        "-" + p(d.getHours(), 2) + p(d.getMinutes(), 2) + p(d.getSeconds(), 2) + ".zip";
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      clearClipError();
+      status("Saved " + name + " (" + entries.length + " swings, " +
+        (built.byteLength / 1048576).toFixed(1) + " MB)");
+    } catch (e) {
+      setClipError("zip failed: " + (e && e.message || e));
+    }
+  }
+  readNext();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1433,26 +1401,14 @@ document.getElementById("crack-toggle").addEventListener("click", function () {
 /* Optional per-swing clips via the toggle (~3 s each, ~1.5 MB).       */
 /* ------------------------------------------------------------------ */
 var clipToggle = document.getElementById("clip-toggle");
-var swingClips = []; // {id, blob}
-var downloadedClipIds = {}; // ids already saved to the folder
+var swingClips = []; // {id, blob} — downloaded as one zip, never per-clip
+// (2026-09-26: per-clip a.click() auto-downloads were silently blocked by
+// the browser; the app marked them saved anyway and 45 clips never reached
+// disk. Clips now stay in memory until the user hits "Download all swings".)
 
 function attachClipPlayer(swingId, blob) {
   var url = URL.createObjectURL(blob);
-  // 1) Drop it in the folder immediately (Downloads).
-  // Session-stamped filename: swing-20260918-193022-03.webm (no parens/
-  // spaces, so the browser never renames with " (1)").
-  try {
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = (typeof clipFileName === "function")
-      ? clipFileName(state.sessionStart, swingId)
-      : "swing-" + swingId + ".webm";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    downloadedClipIds[swingId] = true;
-  } catch (e) { /* in-page player still works */ }
-  // 2) In-page replay on the swing card.
+  // 1) In-page replay on the swing card.
   var card = swingLogEl.querySelector('[data-swing-id="' + swingId + '"]');
   if (card && !card.querySelector("video.swing-clip")) {
     var v = document.createElement("video");
@@ -1463,7 +1419,7 @@ function attachClipPlayer(swingId, blob) {
     v.className = "swing-clip";
     card.appendChild(v);
   }
-  // 3) "Tap ball": load this clip into the tapper for hand-labeled ground truth.
+  // 2) "Tap ball": load this clip into the tapper for hand-labeled ground truth.
   if (card && !card.querySelector("button.swing-tapball")) {
     var tb = document.createElement("button");
     tb.className = "btn ghost swing-tapball";
@@ -1540,9 +1496,9 @@ function startSession() {
 function stopSession() {
   state.recording = false;
   // The clip ring keeps running while the camera is live (it started at
-  // camera-live, not at Save) — manual "Save video" keeps working after
-  // Done, and the next Save has instant pre-roll. ~6MB bounded ring.
-  // Detector keeps running if the camera is live — only saving stops.
+  // camera-live, not at Save) so the next Save has instant pre-roll.
+  // ~6MB bounded ring. Detector keeps running if the camera is live —
+  // only saving stops.
   if (window.CageCast && CageCast.isConnected()) {
     CageCast.session(cameraLive() ? 'live' : 'idle', cameraLive() ? 'Not saving' : 'Session ended');
   }
@@ -1864,16 +1820,9 @@ function downloadSession() {
   b2.href = URL.createObjectURL(new Blob([JSON.stringify(log, null, 2)], { type: "application/json" }));
   b2.download = "cage-session-swings.json";
   b2.click();
-  // Per-swing clips not already saved to the folder.
-  swingClips.forEach(function (c) {
-    if (downloadedClipIds[c.id]) return;
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(c.blob);
-    a.download = (typeof clipFileName === "function")
-      ? clipFileName(state.sessionStart, c.id)
-      : "swing-" + c.id + ".webm";
-    a.click();
-  });
+  // Swing clips are downloaded as one zip via "Download all swings (.zip)"
+  // (2026-09-26: the old per-clip re-download loop here was silently blocked
+  // by the browser — removed, not fixed).
 }
 
 btnStart.addEventListener("click", startSession);
