@@ -99,11 +99,10 @@ function run(sb, code) { return vm.runInContext(code, sb); }
 
 // ---- 2. ballisticFit stage forensics ----
 function synthTrail(sb, opts) {
-  // A low line drive that stays near the z=CONTACT_HEIGHT_M init
-  // assumption, projected through the real homography — the fit
-  // recovers it exactly (rmse 0, dv 0). Balls arcing well above the
-  // 1.22 m camera defeat the linear init; that is solver conditioning,
-  // not forensics, and is out of scope here.
+  // A low line drive projected through the real homography — the fit
+  // recovers it (rmse ~0, dv ~0). The 2026-09-26 grid+LM init also handles
+  // balls arcing well above the 1.22 m camera (see the forward-sim sweep
+  // in section 7); the old linear init could not.
   return run(sb, "(" + (function (o) {
     var Hh = {
       H: PROFILE.homography.imageToGround,
@@ -130,20 +129,23 @@ function synthTrail(sb, opts) {
   check("fewer-than-4 stage", r.fit === null && r.stage === "fewer than 4 points (3)",
     JSON.stringify(r.stage));
 
-  // 2b. All-identical timestamps -> linear init singular.
+  // 2b. All-identical timestamps -> velocity columns of the Jacobian are
+  // zero, so even the damped normal equations are singular. Fail-closed
+  // with a named stage (the old linear init reported this differently;
+  // the contract is fail-closed + named, not the exact string).
   var flat = run(sb,
     "[0,1,2,3,4].map(function(k){return {u:600+k*10, v:300, t:1.0};});");
   r = run(sb, "ballisticFit(" + JSON.stringify(flat) +
     ", {H:PROFILE.homography.imageToGround,Hinv:invert3(PROFILE.homography.imageToGround),n:8,reprojMeanPx:1,live:false});");
-  check("singular-init stage", r.fit === null && r.stage === "linear init fit singular",
+  check("flat-timestamps stage", r.fit === null && r.stage === "normal equations singular (iter 0)",
     JSON.stringify(r.stage));
 
-  // 2c. Degenerate homography -> unproject failure names the point.
+  // 2c. Degenerate homography -> anchor unproject fails with a named stage.
   run(sb, "PROFILE.homography.imageToGround = [[0,0,0],[0,0,0],[0,0,0]];");
   r = run(sb, "ballisticFit(" + JSON.stringify(flat) +
     ", {H:PROFILE.homography.imageToGround,Hinv:[[1,0,0],[0,1,0],[0,0,1]],n:8,reprojMeanPx:1,live:false});");
-  check("unproject-failure stage names the point",
-    r.fit === null && r.stage === "unproject failed at init (point 0)",
+  check("unproject-failure stage",
+    r.fit === null && r.stage === "unproject failed at init",
     JSON.stringify(r.stage));
 })();
 
@@ -160,43 +162,44 @@ function synthTrail(sb, opts) {
 })();
 
 (function () {
-  // 2e/2f. Projection-failure injection: GN loop vs final residual.
+  // 2e/2f. Projection-failure injection: LM residual vs LM jacobian.
+  // The grid does exactly 8*8*24 starts x n worldToImage calls before the
+  // first LM iteration (no injection during the grid, so every start
+  // projects); failing a call inside LM iter 0 must fail closed with the
+  // LM phase named.
   var sb = makeSandbox();
   var st = synthTrail(sb);
   var hhSrc = "{H:PROFILE.homography.imageToGround," +
     "Hinv:invert3(PROFILE.homography.imageToGround),n:8,reprojMeanPx:1,live:false}";
   var trailSrc = JSON.stringify(st.trail);
   var n = st.trail.length;
-  // Clean run: count worldToImage calls; the final residual loop is the
-  // last n calls, so failing call (C - n + 1) hits its first point.
-  var C = run(sb,
-    "var __w=worldToImage, __c=0;" +
-    "worldToImage=function(){__c++; return __w.apply(null,arguments);};" +
-    "var __clean=ballisticFit(" + trailSrc + "," + hhSrc + ");" +
-    "worldToImage=__w; __c;");
+  // Call layout: the grid does 8*8*24*n projections, then the initial
+  // sseOf does n, then each LM iteration interleaves per point: 1 residual
+  // predict + 6 jacobian perturbs. So LM iter 0's residual point 0 is call
+  // (gridCalls + n + 1) and its jacobian point 0 param 0 is (+n+2).
+  var gridCalls = 8 * 8 * 24 * n;
   var clean = run(sb, "ballisticFit(" + trailSrc + "," + hhSrc + ");");
   check("synthetic line drive fits", !!clean.fit && clean.stage === null,
     "stage=" + JSON.stringify(clean.stage));
-  console.log("     (worldToImage calls on clean fit: " + C + ")");
-  // Fail the first projection call -> inside the Gauss-Newton loop.
+  // Fail the residual projection of LM iter 0 point 0.
   var r = run(sb,
     "var __w2=worldToImage, __k=0;" +
-    "worldToImage=function(){__k++; if(__k===1) return null;" +
+    "worldToImage=function(){__k++; if(__k===" + (gridCalls + n + 1) + ") return null;" +
     " return __w2.apply(null,arguments);};" +
     "var __r2=ballisticFit(" + trailSrc + "," + hhSrc + ");" +
     "worldToImage=__w2; __r2;");
-  check("GN projection-failure stage",
-    r.fit === null && r.stage === "projection failed (gauss-newton iter 0 point 0)",
+  check("LM residual projection-failure stage",
+    r.fit === null && r.stage === "projection failed (lm iter 0 point 0)",
     JSON.stringify(r.stage));
-  // Fail the first call of the final residual loop.
+  // Fail the jacobian projection of LM iter 0 point 0 param 0.
   r = run(sb,
     "var __w3=worldToImage, __m=0;" +
-    "worldToImage=function(){__m++; if(__m===" + (C - n + 1) + ") return null;" +
+    "worldToImage=function(){__m++; if(__m===" + (gridCalls + n + 2) + ") return null;" +
     " return __w3.apply(null,arguments);};" +
     "var __r3=ballisticFit(" + trailSrc + "," + hhSrc + ");" +
     "worldToImage=__w3; __r3;");
-  check("final-residual projection-failure stage",
-    r.fit === null && r.stage === "projection failed (final residual, point 0)",
+  check("LM jacobian projection-failure stage",
+    r.fit === null && r.stage === "projection failed (lm jacobian iter 0 point 0 param 0)",
     JSON.stringify(r.stage));
 })();
 
@@ -230,7 +233,7 @@ function synthTrail(sb, opts) {
     "[0,1,2,3,4].map(function(k){return {u:600+k*10, v:300, t:1.0};});");
   r = run(sb, "analyzeSwing(" + JSON.stringify(flat) + ");");
   check("fit stage survives into analyzeSwing reason",
-    r.tracked === false && r.reason === "trajectory fit failed (linear init fit singular)",
+    r.tracked === false && r.reason === "trajectory fit failed (normal equations singular (iter 0))",
     JSON.stringify(r.reason));
 })();
 
@@ -243,6 +246,125 @@ function synthTrail(sb, opts) {
   check("ballisticFit returns {fit, stage} objects",
     /return \{ fit: null, stage:/.test(body) &&
     /return \{\s*fit: \{\s*v0:/.test(body) && /stage: null\s*\}/.test(body));
+})();
+
+// ---- 4b. Grid-init + LM fitter: forward-sim ground-truth sweep ----
+// Synthetic trails with KNOWN ground truth through the real PROFILE
+// homography: speeds 9/15/25/35 m/s x launches 5/20/35 deg, 6 points at
+// 30 fps, +/-0.5 px deterministic noise. The old Gauss-Newton init went
+// "normal equations singular" on every one of these (the 9 m/s @ 20 deg
+// case is the Sept 2026 field forensics case); the grid+LM fitter must
+// converge with |speed| < 10%, |launch| < 5 deg, rmse < 2 px.
+(function () {
+  var sb = makeSandbox();
+  function simTrailTruth(speed, launchDeg) {
+    return run(sb, "(" + (function (sp, la) {
+      var Hh = {
+        H: PROFILE.homography.imageToGround,
+        Hinv: invert3(PROFILE.homography.imageToGround)
+      };
+      var lr = la * Math.PI / 180;
+      var vx = sp * Math.cos(lr), vy = 0, vz = sp * Math.sin(lr);
+      var trail = [];
+      for (var k = 0; k < 6; k++) {
+        var t = k / 30;
+        var uv = worldToImage(Hh, vx * t, vy * t,
+          CONTACT_HEIGHT_M + vz * t - 4.905 * t * t);
+        // Deterministic +/-0.5 px noise (not random: the suite must be stable).
+        trail.push({
+          u: uv[0] + 0.5 * Math.sin(k * 2.39 + 1.7),
+          v: uv[1] + 0.5 * Math.cos(k * 3.71 + 0.6),
+          t: t
+        });
+      }
+      var seed = worldToImage(Hh, 0, 0, CONTACT_HEIGHT_M);
+      return { trail: trail, seedPx: { u: seed[0], v: seed[1] } };
+    }).toString() + ")(" + speed + "," + launchDeg + ");");
+  }
+  var hhSrc = "{H:PROFILE.homography.imageToGround," +
+    "Hinv:invert3(PROFILE.homography.imageToGround)}";
+  [9, 15, 25, 35].forEach(function (sp) {
+    [5, 20, 35].forEach(function (la) {
+      var st = simTrailTruth(sp, la);
+      var r = run(sb, "ballisticFit(" + JSON.stringify(st.trail) + "," +
+        hhSrc + "," + JSON.stringify(st.seedPx) + ");");
+      var name = "fitter " + sp + "m/s @" + la + "deg";
+      if (!r.fit) {
+        check(name, false, "no fit, stage=" + JSON.stringify(r.stage));
+        return;
+      }
+      var v = r.fit.v0;
+      var spdHat = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+      var laHat = Math.atan2(v.z, Math.sqrt(v.x * v.x + v.y * v.y)) * 180 / Math.PI;
+      check(name + " converges",
+        Math.abs(spdHat - sp) / sp < 0.10 && Math.abs(laHat - la) < 5 && r.fit.rmsePx < 2,
+        "speed " + spdHat.toFixed(2) + " (truth " + sp + "), launch " +
+        laHat.toFixed(1) + " (truth " + la + "), rmse " + r.fit.rmsePx.toFixed(2) + "px");
+    });
+  });
+  // The exact forensics case: 9 m/s at 20 deg must recover ~20 mph.
+  var fx = simTrailTruth(9, 20);
+  var fr = run(sb, "ballisticFit(" + JSON.stringify(fx.trail) + "," + hhSrc + "," +
+    JSON.stringify(fx.seedPx) + ");");
+  var fv = fr.fit.v0;
+  var fspd = Math.sqrt(fv.x * fv.x + fv.y * fv.y + fv.z * fv.z);
+  check("forensics case 9m/s@20deg recovers ~20mph",
+    !!fr.fit && Math.abs(fspd * 2.23694 - 20.1) < 2.5,
+    fr.fit ? (fspd * 2.23694).toFixed(1) + " mph, rmse " + fr.fit.rmsePx.toFixed(2) + "px"
+           : "stage=" + JSON.stringify(fr.stage));
+  // No-seed fallback (anchor = first trail point) still converges.
+  var ns = run(sb, "ballisticFit(" + JSON.stringify(fx.trail) + "," + hhSrc + ",null);");
+  check("no-seed fallback converges", !!ns.fit && ns.fit.rmsePx < 2,
+    ns.fit ? "rmse " + ns.fit.rmsePx.toFixed(2) + "px" : "stage=" + JSON.stringify(ns.stage));
+})();
+
+// ---- 4c. Garbage trail fails closed: named stage, never numbers ----
+(function () {
+  var sb = makeSandbox();
+  // Seeded random walk: erratic +/-200 px jumps a ballistic model cannot
+  // explain. Must fail closed — no exit velo, no launch angle, ever.
+  var rnd = run(sb, "(function(){var a=12345;return function(){" +
+    "a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);" +
+    "t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};})();");
+  var pts = [], gu = 640, gv = 360;
+  for (var k = 0; k < 8; k++) {
+    gu += (rnd() - 0.5) * 400; gv += (rnd() - 0.5) * 400;
+    pts.push({ u: gu, v: gv, t: k / 30 });
+  }
+  var hhSrc = "{H:PROFILE.homography.imageToGround," +
+    "Hinv:invert3(PROFILE.homography.imageToGround)}";
+  var diag = {};
+  sb.__diag = diag;
+  var r = run(sb, "analyzeSwing(" + JSON.stringify(pts) + ",__diag);");
+  check("garbage trail -> tracked:false",
+    r.tracked === false && typeof r.reason === "string" && r.reason.length > 0,
+    JSON.stringify(r.reason));
+  check("garbage trail reports no numbers",
+    r.exitVeloMph === undefined && r.launchAngleDeg === undefined,
+    JSON.stringify(r));
+  // Fail-closed forensics: either the fit itself died with a named stage,
+  // or it converged with an rmse the 4px gate rejected (the reason names it).
+  var gate = run(sb, "FIT_RMSE_GATE_PX;");
+  check("garbage trail fails closed with forensics",
+    (typeof diag.fitStage === "string" && diag.fitStage.length > 0) ||
+    (typeof diag.fitRmsePx === "number" && diag.fitRmsePx > gate &&
+     /trajectory fit too loose/.test(r.reason)),
+    JSON.stringify({ stage: diag.fitStage, rmsePx: diag.fitRmsePx, reason: r.reason }));
+})();
+
+// ---- 4d. Fit forensics land in ballDiag ----
+(function () {
+  var sb = makeSandbox();
+  var st = synthTrail(sb);
+  var diag = {};
+  sb.__diag = diag;
+  run(sb, "var __hh={H:PROFILE.homography.imageToGround," +
+    "Hinv:invert3(PROFILE.homography.imageToGround)};");
+  var r = run(sb, "analyzeSwing(" + JSON.stringify(st.trail) + ",__diag);");
+  check("tracked swing fills fit forensics",
+    r.tracked === true && diag.fitStage === null &&
+    typeof diag.fitRmsePx === "number" && typeof diag.fitSpeedMph === "number",
+    JSON.stringify(diag));
 })();
 
 // ---- 5. watchStreamEnded: dead camera stops the clip ring ----

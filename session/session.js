@@ -440,6 +440,9 @@ function trackBall(seed, diag) {
     function finish() {
       if (done) return;
       done = true;
+      // Contact seed in pixels for the trajectory fitter's position anchor
+      // (the motion centroid at crack time ≈ the contact point).
+      if (seed) diag.contactSeedPx = { u: seed.x * cap.width, v: seed.y * cap.height };
       resolve(detectBallTrail(frames, cap.width, cap.height, seed, times, diag));
     }
     // Watchdog: rVFC stops firing if the stream freezes, so the timeout
@@ -520,30 +523,38 @@ function solve3(M, rhs) {
   return solveN(M, rhs);
 }
 
-// Ballistic fit: p(t) = p0 + v0*t - 0.5*g*t^2 in z, Gauss-Newton over the
-// 6 params [x0,y0,z0,vx,vy,vz] minimizing reprojection error in px.
+// Ballistic fit: p(t) = p0 + v0*t - 0.5*g*t^2 in z, Levenberg-Marquardt
+// over the 6 params [x0,y0,z0,vx,vy,vz] minimizing reprojection error in px.
 // Exact perspective handling — no per-frame height assumption, no
 // image-space polynomial approximation.
+// Init (2026-09-26 fix): grid search over (speed, launch, ground azimuth)
+// from the contact-seed anchor, NOT a linear fit through per-point
+// unprojections at contact height. The old init unprojected EVERY trail
+// point at CONTACT_HEIGHT_M; the cage camera sits 4 ft high, so any ball
+// with positive launch is above the camera within 1-2 frames and that init
+// produced garbage (reproduced vx=-164 m/s, wrong sign, 20x magnitude),
+// from which raw Gauss-Newton diverged on 100% of field trails
+// ("normal equations singular"). The 6-param perspective model itself is
+// identifiable — LM from the grid winner recovers 20.5 mph vs 20.1 truth
+// at 0.33 px RMSE on the 9 m/s @ 20 deg forensics case.
 // Returns {fit} on success, or {fit: null, stage} naming the rejection
 // stage — every null path reports WHERE it died. (2026-09-26 forensics:
 // seven swings all reported "trajectory fit failed" with no detail,
 // costing a whole cage session. Never return a bare null again.)
 // NOTE: v0 is the velocity at the FIRST TRAIL POINT (~1 frame after
 // contact); analyzeSwing gravity-corrects vz back to contact time.
-function ballisticFit(trail, Hh) {
+// seedPx: contact seed pixel {u,v} (the motion centroid at crack time),
+// threaded from trackBall via diag.contactSeedPx; falls back to the first
+// trail point when absent.
+function ballisticFit(trail, Hh, seedPx) {
   var n = trail.length;
   if (n < 4) return { fit: null, stage: "fewer than 4 points (" + n + ")" }; // 2n equations, 6 unknowns — need margin
   var G = 9.81;
-  // Initial guess: unproject at contact height, linear fit for velocity.
-  var ts = [], xs = [], ys = [];
-  for (var k = 0; k < n; k++) {
-    var w = imageToWorld(trail[k].u, trail[k].v, CONTACT_HEIGHT_M);
-    if (!w) return { fit: null, stage: "unproject failed at init (point " + k + ")" };
-    ts.push(trail[k].t - trail[0].t); xs.push(w.x); ys.push(w.y);
-  }
-  var fx = linFit(ts, xs), fy = linFit(ts, ys);
-  if (!fx || !fy) return { fit: null, stage: "linear init fit singular" };
-  var th = [fx.c, fy.c, CONTACT_HEIGHT_M, fx.b, fy.b, 0]; // [x0,y0,z0,vx,vy,vz]
+  // Anchor (x0,y0): unproject the contact seed pixel at contact height.
+  var ax = trail[0].u, ay = trail[0].v;
+  if (seedPx && isFinite(seedPx.u) && isFinite(seedPx.v)) { ax = seedPx.u; ay = seedPx.v; }
+  var w0 = imageToWorld(ax, ay, CONTACT_HEIGHT_M);
+  if (!w0) return { fit: null, stage: "unproject failed at init" };
 
   function predict(th, t) {
     return worldToImage(Hh,
@@ -551,9 +562,46 @@ function ballisticFit(trail, Hh) {
       th[1] + th[4] * t,
       th[2] + th[5] * t - 0.5 * G * t * t);
   }
+  function sseOf(th) {
+    var se = 0;
+    for (var k = 0; k < n; k++) {
+      var pr = predict(th, trail[k].t - trail[0].t);
+      if (!pr) return null;
+      var du = pr[0] - trail[k].u, dv = pr[1] - trail[k].v;
+      se += du * du + dv * dv;
+    }
+    return se;
+  }
 
-  var iter = 0;
-  for (iter = 0; iter < 15; iter++) {
+  // Grid init over velocity: speed x launch x ground azimuth (0 = +x,
+  // straightaway). The rmse winner starts LM. 1536 starts x <=12 points is
+  // trivial compute, and this runs post-swing only.
+  var SPEEDS = [6, 10, 14, 18, 24, 30, 36, 42];
+  var LAUNCHES = [-15, -5, 5, 15, 25, 35, 45, 55];
+  var best = null, bestRmse = Infinity;
+  for (var si = 0; si < SPEEDS.length; si++) {
+    for (var li = 0; li < LAUNCHES.length; li++) {
+      var lr = LAUNCHES[li] * Math.PI / 180;
+      var vhz = SPEEDS[si] * Math.cos(lr), vzg = SPEEDS[si] * Math.sin(lr);
+      for (var ai = 0; ai < 24; ai++) {
+        var ar = ai * (Math.PI / 12);
+        var thg = [w0.x, w0.y, CONTACT_HEIGHT_M,
+                   vhz * Math.cos(ar), vhz * Math.sin(ar), vzg];
+        var se0 = sseOf(thg);
+        if (se0 === null || !isFinite(se0)) continue;
+        var rmse0 = Math.sqrt(se0 / (2 * n));
+        if (rmse0 < bestRmse) { bestRmse = rmse0; best = thg; }
+      }
+    }
+  }
+  if (!best) return { fit: null, stage: "grid init found no projectable start" };
+  var th = best, sse = sseOf(th);
+
+  // Levenberg-Marquardt: (J^T J + lambda*diag(J^T J)) d = -J^T r.
+  // lambda starts 1e-3, /=10 on accept, *=10 on reject; accept when
+  // sse2 <= sse. Cap 60 iterations.
+  var lambda = 1e-3, iter = 0, converged = false;
+  for (iter = 0; iter < 60; iter++) {
     var r = new Array(2 * n);
     var J = [];
     for (var k2 = 0; k2 < 2 * n; k2++) J.push([0, 0, 0, 0, 0, 0]);
@@ -561,21 +609,21 @@ function ballisticFit(trail, Hh) {
     for (var k3 = 0; k3 < n; k3++) {
       var t = trail[k3].t - trail[0].t;
       var pr = predict(th, t);
-      if (!pr) { ok = false; failAt = "gauss-newton iter " + iter + " point " + k3; break; }
+      if (!pr) { ok = false; failAt = "lm iter " + iter + " point " + k3; break; }
       r[2 * k3] = pr[0] - trail[k3].u;
       r[2 * k3 + 1] = pr[1] - trail[k3].v;
       for (var p = 0; p < 6; p++) {
         var h = Math.max(1e-7, Math.abs(th[p]) * 1e-6);
         var th2 = th.slice(); th2[p] += h;
         var pr2 = predict(th2, t);
-        if (!pr2) { ok = false; failAt = "gauss-newton jacobian iter " + iter + " point " + k3 + " param " + p; break; }
+        if (!pr2) { ok = false; failAt = "lm jacobian iter " + iter + " point " + k3 + " param " + p; break; }
         J[2 * k3][p] = (pr2[0] - pr[0]) / h;
         J[2 * k3 + 1][p] = (pr2[1] - pr[1]) / h;
       }
       if (!ok) break;
     }
     if (!ok) return { fit: null, stage: "projection failed (" + failAt + ")" };
-    // Normal equations: (J^T J) d = -J^T r.
+    // Damped normal equations: (J^T J + lambda*diag(J^T J)) d = -J^T r.
     var JTJ = [], JTr = [0, 0, 0, 0, 0, 0];
     for (var a = 0; a < 6; a++) {
       JTJ.push([0, 0, 0, 0, 0, 0]);
@@ -588,33 +636,49 @@ function ballisticFit(trail, Hh) {
       for (var m2 = 0; m2 < 2 * n; m2++) sr += J[m2][a] * r[m2];
       JTr[a] = -sr;
     }
+    for (var dd = 0; dd < 6; dd++) JTJ[dd][dd] *= (1 + lambda);
     var d = solveN(JTJ, JTr);
     if (!d) return { fit: null, stage: "normal equations singular (iter " + iter + ")" };
-    var maxStep = 0;
+    var maxD = 0, dBad = false;
     for (var q = 0; q < 6; q++) {
-      th[q] += d[q];
-      if (Math.abs(d[q]) > maxStep) maxStep = Math.abs(d[q]);
+      if (!isFinite(d[q])) { dBad = true; break; }
+      if (Math.abs(d[q]) > maxD) maxD = Math.abs(d[q]);
     }
-    if (maxStep < 1e-9) break;
+    if (dBad) return { fit: null, stage: "normal equations singular (iter " + iter + ")" };
+    // Convergence BEFORE the improvement test: at the minimum the damped
+    // step is ~0, so a strict-improvement test would reject it, crank
+    // lambda to 1e12, and falsely report non-convergence.
+    if (maxD < 1e-9) { converged = true; break; }
+    var thN = th.slice();
+    for (var q2 = 0; q2 < 6; q2++) thN[q2] += d[q2];
+    var sse2 = sseOf(thN);
+    if (sse2 !== null && sse2 <= sse) {
+      th = thN; sse = sse2; lambda /= 10;
+    } else {
+      lambda *= 10;
+      if (lambda > 1e12) return { fit: null, stage: "lm failed to converge" };
+    }
   }
-  var se = 0;
-  for (var k4 = 0; k4 < n; k4++) {
-    var t4 = trail[k4].t - trail[0].t;
-    var pr4 = predict(th, t4);
-    if (!pr4) return { fit: null, stage: "projection failed (final residual, point " + k4 + ")" };
-    se += (pr4[0] - trail[k4].u) * (pr4[0] - trail[k4].u) +
-          (pr4[1] - trail[k4].v) * (pr4[1] - trail[k4].v);
-  }
+  if (!converged) return { fit: null, stage: "lm failed to converge" };
+
+  // Plausibility gates — fail closed, never report numbers on violation.
+  var spd = Math.sqrt(th[3] * th[3] + th[4] * th[4] + th[5] * th[5]);
+  if (!(spd <= 60)) return { fit: null, stage: "implausible fit (speed " + spd.toFixed(1) + " m/s)" };
+  if (!(th[2] >= 0 && th[2] <= 3)) return { fit: null, stage: "implausible fit (z0 " + th[2].toFixed(2) + " m)" };
+  if (!(Math.abs(th[0]) <= 15 && Math.abs(th[1]) <= 15))
+    return { fit: null, stage: "implausible fit (p0 out of cage)" };
+
   return {
     fit: {
       v0: { x: th[3], y: th[4], z: th[5] },
       p0: { x: th[0], y: th[1], z: th[2] },
-      rmsePx: Math.sqrt(se / (2 * n)),
+      rmsePx: Math.sqrt(sse / (2 * n)),
       iters: iter + 1
     },
     stage: null
   };
 }
+
 
 // Linear least squares: p(t) = b*t + c. Initial-guess workhorse.
 function linFit(ts, ps) {
@@ -682,7 +746,8 @@ var VPERP_NOISE_PXPS = 45;    // 1.5 px/frame @ 30 fps: below this, LA is noise
 var CONTACT_LAG_S = 1 / 30;   // first trail point lags contact by ~1 frame;
                               // vz is gravity-corrected back to contact time
 
-function analyzeSwing(trail) {
+function analyzeSwing(trail, diag) {
+  diag = diag || {}; // forensics sink: fitStage / fitRmsePx / fitSpeedMph
   if (!trail) {
     return { tracked: false, reason: "ball not tracked reliably" };
   }
@@ -693,7 +758,11 @@ function analyzeSwing(trail) {
   if (!Hh.H || !Hh.Hinv) return { tracked: false, reason: "no calibration available" };
 
   // Joint 3D ballistic fit — the residual is the honest fit quality.
-  var fr = ballisticFit(trail, Hh);
+  // The contact seed (motion centroid at crack time, px) anchors the fit's
+  // position init; without it the fitter falls back to the first trail point.
+  var fr = ballisticFit(trail, Hh, diag.contactSeedPx || null);
+  diag.fitStage = fr.stage; // null on success — the named stage is forensics
+  if (fr.fit) diag.fitRmsePx = +fr.fit.rmsePx.toFixed(2);
   if (!fr.fit) return { tracked: false, reason: "trajectory fit failed (" + fr.stage + ")" };
   var fit = fr.fit;
   if (fit.rmsePx > FIT_RMSE_GATE_PX) {
@@ -723,6 +792,7 @@ function analyzeSwing(trail) {
 
   var speedMps = Math.sqrt(vx * vx + vy * vy + vz * vz);
   var exitVeloMph = speedMps * MPH_PER_MPS;
+  diag.fitSpeedMph = +exitVeloMph.toFixed(1); // forensics: what the fit claimed
   var sprayDeg = Math.atan2(vy, vx) * 180 / Math.PI; // 0 = straightaway center
 
   // Sanity gates (fail-closed).
@@ -1015,7 +1085,7 @@ function logSwing(manual, ps) {
     try { ballPromise = trackBall(seed, ballDiag); } catch (e) { ballPromise = Promise.resolve(null); }
   }
   ballPromise.then(function (trail) {
-    var result = analyzeSwing(trail);
+    var result = analyzeSwing(trail, ballDiag);
     if (saving && swingEntry) {
       swingEntry.result = result;
       swingEntry.ballDiag = ballDiag; // forensics: blob/streak points, gate margins

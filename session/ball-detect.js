@@ -314,6 +314,11 @@ function detectBallTrail(frames, W, H, seed, times, diag) {
   // reliable ball-vs-not signal.
   diag.failReason = null;
   diag.dy = +dy.toFixed(1); // forensics: which way did it go?
+  // Forensics: the raw trail the fitter saw, so a bad fit can be diagnosed
+  // from the log alone (this is what the Sept 18-26 outage was missing).
+  diag.trailPts = trail.map(function (p) {
+    return [+p.u.toFixed(1), +p.v.toFixed(1), +p.t.toFixed(3)];
+  });
   return trail;
 }
 

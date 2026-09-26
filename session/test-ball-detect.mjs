@@ -322,5 +322,28 @@ var W = 640, H = 360, BG = 25;
   }
 })();
 
+// --- Forensics: detectBallTrail records the raw trail in ballDiag ----
+(function () {
+  var frames = [];
+  for (var f = 0; f < 7; f++) {
+    var fr = makeFrame(W, H, BG);
+    drawBlob(fr, 100 + f * 30, 250 - f * 20, 4, 210);
+    frames.push(fr);
+  }
+  var d = {};
+  var trail = detectBallTrail(frames, W, H, null, null, d);
+  check("forensics: trail found", !!trail, "got null: " + d.failReason);
+  if (trail) {
+    check("forensics: trailPts recorded",
+      Array.isArray(d.trailPts) && d.trailPts.length === trail.length,
+      "got " + JSON.stringify(d.trailPts && d.trailPts.length));
+    var p0 = d.trailPts[0];
+    check("forensics: trailPts entries are rounded [u,v,t]",
+      p0.length === 3 && Math.abs(p0[0] - trail[0].u) < 0.06 &&
+      Math.abs(p0[1] - trail[0].v) < 0.06 && Math.abs(p0[2] - trail[0].t) < 0.0006,
+      JSON.stringify(p0));
+  }
+})();
+
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");
 process.exit(failures === 0 ? 0 : 1);
