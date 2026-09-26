@@ -1192,6 +1192,12 @@ function buildBallTruth(o) {
     if (panel) panel.classList.remove("hidden");
     var tools = $("ball-tap-tools");
     if (tools) tools.classList.remove("hidden");
+    // Scroll the video into view — the swing log is at the bottom of the
+    // page, and without this the loaded clip is off-screen above.
+    try {
+      var wrap = $("camera-wrap");
+      if (wrap && wrap.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {}
     updateBallUI();
     setStatus("Video loaded — hit \"\u26BE Tap ball\", pause/scrub to a frame, tap the ball. Step one frame with \u25C0 \u25B6.");
     return true;
