@@ -1395,6 +1395,68 @@ document.getElementById("crack-toggle").addEventListener("click", function () {
   startCrackDetector();
 });
 
+// Bat calibration: learn the crack of Yancy's actual bats.
+// Flow: click "🏏 Calibrate bats" → hit 3 balls with Bat 1, clicking
+// "Mark hit" after each → "Next bat" → 3 with Bat 2 → "Done" sets
+// the trigger floor from the quieter bat.
+(function () {
+  var btn = document.getElementById("bat-cal-btn");
+  if (!btn) return;
+  var origLabel = btn.textContent;
+  function setCalUI(html) {
+    if (crackStatusEl) crackStatusEl.innerHTML = html;
+  }
+  btn.addEventListener("click", function () {
+    if (!crackDetector || !crackDetector.isRunning()) {
+      setCalUI("turn crack detect on first");
+      return;
+    }
+    if (crackDetector.isCalibrating()) {
+      // Button acts as "Mark hit" during calibration.
+      var rec = crackDetector.markHit();
+      var bat = crackDetector.calibrationBat();
+      var n = crackDetector.calibrationHits();
+      if (rec) {
+        setCalUI("Bat " + bat + ": hit " + n + "/3 recorded " +
+          "(loudness " + rec.bandE + "). " +
+          (n < 3 ? "Hit another, then Mark." :
+           bat === 1 ? "<button id='cal-next' class='btn'>Next bat →</button>" :
+           "<button id='cal-done' class='btn'>Done ✓</button>"));
+        wireCalButtons();
+      } else {
+        setCalUI("Bat " + bat + ": no sound captured — hit the ball, then Mark.");
+      }
+      return;
+    }
+    // Start calibration.
+    crackDetector.startCalibration();
+    btn.textContent = "📍 Mark hit";
+    btn.classList.add("armed");
+    setCalUI("Bat 1: hit 3 balls, click <b>Mark hit</b> after each one. I'm listening…");
+  });
+  function wireCalButtons() {
+    var nx = document.getElementById("cal-next");
+    if (nx) nx.addEventListener("click", function () {
+      crackDetector.nextBat();
+      setCalUI("Bat 2: hit 3 balls, click <b>Mark hit</b> after each one.");
+    });
+    var dn = document.getElementById("cal-done");
+    if (dn) dn.addEventListener("click", function () {
+      var sum = crackDetector.finishCalibration();
+      btn.textContent = origLabel;
+      btn.classList.remove("armed");
+      if (sum) {
+        setCalUI("Calibrated ✓ Bat1×" + sum.bat1 + " Bat2×" + sum.bat2 +
+          " — trigger floor " + sum.floor + " (quietest crack " + sum.minBandE + ")");
+      } else {
+        setCalUI("no hits recorded — calibration cancelled");
+      }
+    });
+  }
+  // Expose for the Next/Done buttons wired above.
+  window.__wireCalButtons = wireCalButtons;
+})();
+
 // Mic picker wiring.
 (function () {
   var sel = document.getElementById("mic-select");
@@ -1557,8 +1619,15 @@ var clipRing = [];           // [{blob, t}] — t = Date.now() at arrival
 var lastChunkT = 0;          // Date.now() of last ondataavailable (stall detector)
 var lastRecorderError = null; // last MediaRecorder onerror
 
-function pickSupportedMime() {
-  var cands = [
+function pickSupportedMime(withAudio) {
+  var cands = withAudio ? [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+    "video/mp4"
+  ] : [
     "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
     "video/webm",
@@ -1576,11 +1645,30 @@ function startClipRing() {
   stopClipRing();
   if (!state.stream || !window.MediaRecorder) return;
   try {
-    var mime = pickSupportedMime();
+    // Build a combined stream: camera video + mic audio (if the crack
+    // detector has the mic open). Clips get sound so the bat crack is
+    // audible on playback.
+    var recStream = state.stream;
+    var audioTrk = null;
+    try {
+      if (typeof crackDetector !== "undefined" && crackDetector && crackDetector.audioTrack) {
+        audioTrk = crackDetector.audioTrack();
+      }
+    } catch (e) { audioTrk = null; }
+    if (audioTrk) {
+      try {
+        recStream = new MediaStream();
+        state.stream.getVideoTracks().forEach(function (t) { recStream.addTrack(t); });
+        recStream.addTrack(audioTrk);
+      } catch (e) { recStream = state.stream; audioTrk = null; }
+    }
+    var mime = pickSupportedMime(!!audioTrk);
     state.clipMime = mime || null; // Step 10 forensics: stamp the chosen codec
+    state.clipHasAudio = !!audioTrk;
     var opts = { videoBitsPerSecond: 4 * 1000 * 1000 };
+    if (audioTrk) opts.audioBitsPerSecond = 128 * 1000;
     if (mime) opts.mimeType = mime;
-    sessionRecorder = new MediaRecorder(state.stream, opts);
+    sessionRecorder = new MediaRecorder(recStream, opts);
     sessionRecorderStream = state.stream;
     clipRing = [];
     clipHeaderChunk = null;

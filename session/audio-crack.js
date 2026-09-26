@@ -48,6 +48,13 @@ function createCrackDetector(onCrack) {
   var pollCount = 0;         // proves poll() is actually executing
   var statusCb = null;
   var binHz = 0, binLo = 0, binHi = 0;
+  // Bat calibration: Yancy's two bats sound different. During calibration
+  // we record the peak 1 s-window measurements for each marked hit, then
+  // set the trigger floor from the quieter bat.
+  var calibrating = false;
+  var calBat = 0;            // 0 = bat 1, 1 = bat 2
+  var calHits = [[], []];    // per-bat: [{bandE, hf, peak}]
+  var peakHist = [];         // rolling 1 s of {t, bandE, hf, peak}
 
   function setStatus(s) { if (statusCb) { try { statusCb(s); } catch (e) {} } }
 
@@ -120,12 +127,17 @@ function createCrackDetector(onCrack) {
     }
 
     var hfRatio = totE > 0 ? bandE / totE : 0;
+    // Keep a 1 s rolling history for calibration "mark hit".
+    var nowMs = now;
+    peakHist.push({ t: nowMs, bandE: bandE, hf: hfRatio, peak: peak });
+    while (peakHist.length && peakHist[0].t < nowMs - 1000) peakHist.shift();
+
     var fired = (now >= cooldownUntil &&
         bandE > floorAbs &&
         bandE > base * RATIO &&
         hfRatio > MIN_RATIO_HF &&
         peak > MIN_PEAK);
-    if (fired) {
+    if (fired && !calibrating) {
       cooldownUntil = now + COOLDOWN_MS;
       freezeBaseUntil = now + 600;
       triggers++;
@@ -231,6 +243,69 @@ function createCrackDetector(onCrack) {
     isRunning: function () { return running; },
     triggerCount: function () { return triggers; },
     level: function () { return lastLevel; },
+    // Share the mic track with the clip recorder so swing clips get audio.
+    // Returns the MediaStreamTrack, or null if the mic isn't open.
+    audioTrack: function () {
+      try {
+        if (stream) {
+          var trs = stream.getAudioTracks();
+          if (trs && trs.length) return trs[0];
+        }
+      } catch (e) {}
+      return null;
+    },
+    // Bat calibration: learn the crack signature of Yancy's bats.
+    // startCalibration() begins listening; markHit() records the loudest
+    // 1 s-window measurement as a hit for the current bat; nextBat()
+    // switches to bat 2; finishCalibration() sets the trigger floor from
+    // the quieter bat and returns the summary.
+    startCalibration: function () {
+      calibrating = true; calBat = 0; calHits = [[], []]; peakHist = [];
+    },
+    calibrationBat: function () { return calBat + 1; },
+    calibrationHits: function (bat) { return calHits[bat || calBat].length; },
+    markHit: function () {
+      if (!calibrating || !peakHist.length) return null;
+      var best = peakHist[0];
+      for (var i = 1; i < peakHist.length; i++) {
+        if (peakHist[i].bandE > best.bandE) best = peakHist[i];
+      }
+      var rec = { bandE: Math.round(best.bandE),
+                  hf: Math.round(best.hf * 100) / 100,
+                  peak: Math.round(best.peak * 1000) / 1000 };
+      calHits[calBat].push(rec);
+      peakHist = [];
+      return rec;
+    },
+    nextBat: function () { if (calibrating) { calBat = 1; peakHist = []; } },
+    cancelCalibration: function () { calibrating = false; },
+    isCalibrating: function () { return calibrating; },
+    finishCalibration: function () {
+      calibrating = false;
+      var all = calHits[0].concat(calHits[1]);
+      if (!all.length) return null;
+      // Floor = 60% of the quietest measured crack, but not below the
+      // original absolute minimum. Catches the quiet bat, still rejects
+      // ambient.
+      var minBandE = all[0].bandE;
+      for (var i = 1; i < all.length; i++) {
+        if (all[i].bandE < minBandE) minBandE = all[i].bandE;
+      }
+      floorAbs = Math.max(minBandE * 0.6, 1200);
+      // Also require the hit to be HF-dominant like the measured cracks.
+      var minHf = all[0].hf;
+      for (var j = 1; j < all.length; j++) {
+        if (all[j].hf < minHf) minHf = all[j].hf;
+      }
+      // Don't let a single odd measurement collapse the HF gate.
+      MIN_RATIO_HF = Math.max(0.20, Math.min(0.30, minHf * 0.8));
+      return {
+        bat1: calHits[0].length, bat2: calHits[1].length,
+        minBandE: Math.round(minBandE),
+        floor: Math.round(floorAbs),
+        hfGate: Math.round(MIN_RATIO_HF * 100) / 100
+      };
+    },
     // for the meter's threshold marker: floor relative to meter scale
     floorLevel: function () { return Math.max(0, Math.min(1, floorAbs / (floorAbs * 1.5))); },
     // Mic-hearing telemetry for the export diagnostics: what the mic has
