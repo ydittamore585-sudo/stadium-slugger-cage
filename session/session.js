@@ -1498,6 +1498,11 @@ function attachClipPlayer(swingId, blob) {
     v.preload = "metadata";
     v.src = url;
     v.className = "swing-clip";
+    // When Yancy hits play, bring the video into view — no manual
+    // scrolling to find which clip is playing.
+    v.addEventListener("play", function () {
+      try { v.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) {}
+    });
     card.appendChild(v);
   }
   // 2) "Tap ball": load this clip into the tapper for hand-labeled ground truth.
