@@ -49,12 +49,14 @@ function drawStreak(fr, x0, y0, x1, y1, w, bright) {
 
 var W = 640, H = 360, BG = 25;
 
-// --- Test 1: slow bright blob (the case that already worked) --------
+// --- Test 1: bright blob (the case that already worked) ---------------
 (function () {
   var frames = [];
+  // 36px/frame — a realistic batted-ball image motion. Must clear the
+  // 100px end-to-end displacement gate over the 5-point track.
   for (var f = 0; f < 7; f++) {
     var fr = makeFrame(W, H, BG);
-    drawBlob(fr, 100 + f * 20, 250 - f * 14, 4, 210);
+    drawBlob(fr, 100 + f * 30, 250 - f * 20, 4, 210);
     frames.push(fr);
   }
   var trail = detectBallTrail(frames, W, H, null, null);
@@ -220,6 +222,104 @@ var W = 640, H = 360, BG = 25;
   check("diag: empty failReason", !!d2.failReason, "no failReason");
   check("diag: empty streakCandidates 0", d2.streakCandidates === 0,
     "got " + d2.streakCandidates);
+})();
+
+// --- Test 10: teleport breaks the chain; longest run wins -----------
+(function () {
+  var frames = [];
+  // Ball moves 35px/frame for f=0..5, then teleports 200px and continues
+  // smoothly. The jump must break the chain, and the 5-point pre-teleport
+  // run must win over the 2-point post-teleport run.
+  for (var f = 0; f < 9; f++) {
+    var fr = makeFrame(W, H, BG);
+    var cx = f <= 5 ? 80 + f * 35 : 80 + 5 * 35 + 200 + (f - 6) * 35;
+    drawBlob(fr, cx, 220, 4, 210);
+    frames.push(fr);
+  }
+  var d = {};
+  var trail = detectBallTrail(frames, W, H, null, null, d);
+  check("assoc: longest chain wins", !!trail, "got null: " + d.failReason);
+  check("assoc: one break", d.assocBreaks === 1, "got " + d.assocBreaks);
+  check("assoc: two chains", d.assocChains === 2, "got " + d.assocChains);
+  if (trail) {
+    check("assoc: 5 points", trail.length === 5, "got " + trail.length);
+    check("assoc: all pre-teleport", trail.every(function (p) { return p.u < 300; }));
+  }
+})();
+
+// --- Test 11: brighter distractor off the path is ignored ------------
+(function () {
+  var frames = [];
+  // Ball: 35px/frame at y=220, bright 200. Distractor: BRIGHTER (235),
+  // moving smoothly at y=110 — the old per-frame-winner code would have
+  // followed it. Association must stay on the ball's predicted path.
+  for (var f = 0; f < 9; f++) {
+    var fr = makeFrame(W, H, BG);
+    drawBlob(fr, 80 + f * 35, 220, 4, 200);
+    if (f >= 3 && f <= 6) drawBlob(fr, 400 + f * 15, 110, 4, 235);
+    frames.push(fr);
+  }
+  var d = {};
+  var trail = detectBallTrail(frames, W, H, null, null, d);
+  check("assoc: distractor ignored, trail found", !!trail, "got null: " + d.failReason);
+  check("assoc: no breaks", d.assocBreaks === 0, "got " + d.assocBreaks);
+  if (trail) {
+    check("assoc: 7 points", trail.length === 7, "got " + trail.length);
+    var maxErr = 0;
+    for (var k = 0; k < trail.length; k++) {
+      var f = k + 1; // searched frames are f=1..7
+      var ex = Math.abs(trail[k].u - (80 + f * 35));
+      var ey = Math.abs(trail[k].v - 220);
+      if (ex > maxErr) maxErr = ex;
+      if (ey > maxErr) maxErr = ey;
+    }
+    check("assoc: follows the ball", maxErr < 12, "maxErr=" + maxErr.toFixed(1));
+  }
+})();
+
+// --- Test 12: jitter can't clear the displacement gate ---------------
+(function () {
+  var frames = [];
+  // Fixed jitter pattern: the chain holds (gates pass) but end-to-end
+  // displacement is ~3px — far under the 100px minimum for a real ball.
+  var jx = [0, 8, -6, 4, -9, 7, -3], jy = [0, 5, 9, -7, -4, 8, 6];
+  for (var f = 0; f < 7; f++) {
+    var fr = makeFrame(W, H, BG);
+    drawBlob(fr, 300 + jx[f], 180 + jy[f], 4, 210);
+    frames.push(fr);
+  }
+  var d = {};
+  var trail = detectBallTrail(frames, W, H, null, null, d);
+  check("assoc: jitter rejected", !trail, "got trail");
+  check("assoc: jitter reason", d.failReason && d.failReason.indexOf("displacement") === 0,
+    "got " + d.failReason);
+  check("assoc: jitter single chain", d.assocChains === 1, "got " + d.assocChains);
+})();
+
+// --- Test 13: a 2-frame detection gap coasts, not breaks ---------------
+(function () {
+  var frames = [];
+  // Ball at 35px/frame, but frames 3-4 are empty (occlusion / blur miss).
+  // Searched frames are 1..7; frames 3,4 yield zero candidates. The chain
+  // must coast across the gap — the gap-scaled prediction (s = dt2/dt1)
+  // lands exactly on the reappearing ball — not break into two chains.
+  for (var f = 0; f < 9; f++) {
+    var fr = makeFrame(W, H, BG);
+    if (f !== 3 && f !== 4) drawBlob(fr, 80 + f * 35, 220, 4, 210);
+    frames.push(fr);
+  }
+  var d = {};
+  var trail = detectBallTrail(frames, W, H, null, null, d);
+  check("assoc: gap coasts, trail found", !!trail, "got null: " + d.failReason);
+  check("assoc: no breaks across the gap", d.assocBreaks === 0, "got " + d.assocBreaks);
+  check("assoc: single chain", d.assocChains === 1, "got " + d.assocChains);
+  if (trail) {
+    check("assoc: 5 points span the gap", trail.length === 5, "got " + trail.length);
+    // The post-gap points are the real detections, at the right places.
+    var last = trail[trail.length - 1];
+    check("assoc: post-gap position correct",
+      Math.abs(last.u - (80 + 7 * 35)) < 12, "u=" + last.u.toFixed(1));
+  }
 })();
 
 console.log(failures === 0 ? "\nALL PASS" : "\n" + failures + " FAILURES");

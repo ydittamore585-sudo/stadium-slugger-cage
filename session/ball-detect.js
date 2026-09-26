@@ -20,7 +20,27 @@
  */
 
 var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
-var BALL_MIN_DISPLACEMENT_PX = 8; // full-res px over the track
+// A track is accepted only if its end-to-end displacement clears this.
+// Justification: even a 25 mph (11.2 m/s) grounder covers 0.37 m/frame at
+// 30 fps; at a conservative 150 px/m (cage heightScale measures ~178 px/m
+// at the calibration depth) that's ~56 px/frame, so a minimum 5-point
+// chain (4 intervals) displaces ~220 px end-to-end. Field jitter trails
+// never got close. 100 px keeps 2x margin under the slowest plausible
+// ball while random blob jitter can't reach it.
+var BALL_MIN_DISPLACEMENT_PX = 100; // full-res px over the track
+
+// Cross-frame association gates (2026-09-26: per-frame winners with no
+// continuity produced Frankenstein trails — two session-40 trails hit
+// the fitter with 102/115 px RMSE).
+var ASSOC_CANDS_PER_FRAME = 3; // top-N candidates per frame enter association
+var ASSOC_NMS_PX = 40;         // candidates closer than this are one object
+var ASSOC_R_FIRST_PX = 240;    // frame-2 join radius: 1.5x a 90 mph ball's
+                               // ~160 px/frame (see the streak comment above)
+var ASSOC_R_PRED_PX = 90;      // prediction gate: a constant-velocity
+                               // prediction over one frame is good to ~10 px
+                               // for a real ball (drag/gravity < 2 px/frame);
+                               // 90 px is 9x the noise but far below a
+                               // teleport to a different object (200+ px).
 
 /* ------------------------------------------------------------------ */
 /* Streak detector constants.                                          */
@@ -45,8 +65,11 @@ var STREAK_DIRS = [[1, 0], [1, 1], [0, 1], [-1, 1]];
  *   bestElong, bestScore — even when no streak passes.
  * Returns {x, y, ox, oy, len, score} or null.
  * (x,y) is the streak center; (ox,oy) the unit axis; len the window px.
+ * When `out` is given, every streak candidate is also pushed into it as
+ * {x, y, score} (sorted desc, NMS'd, capped at ASSOC_CANDS_PER_FRAME) —
+ * the association step needs more than the single best.
  */
-function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag) {
+function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag, out) {
   var best = null, bestScore = 0;
   var HL = STREAK_HALF;
   // Forensics: how close did we get?
@@ -84,11 +107,20 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag) {
       if (bs < STREAK_SUM_MIN) continue;      // not substantial enough
       if (bs < STREAK_ELONG_MIN * perp) continue; // compact, not a streak
       var score = bs * (bright / 255);
+      if (out) out.push({ x: x, y: y, score: score });
       if (score > bestScore) {
         bestScore = score;
         best = { x: x, y: y, ox: STREAK_DIRS[bi][0], oy: STREAK_DIRS[bi][1] };
       }
     }
+  }
+  if (out && out.length > 1) {
+    // Sort desc, collapse near-duplicates (same streak, adjacent seeds),
+    // cap at the association width.
+    out.sort(function (a, b) { return b.score - a.score; });
+    var kept = nmsCands(out, ASSOC_NMS_PX);
+    out.length = 0;
+    for (var oi = 0; oi < kept.length; oi++) out.push(kept[oi]);
   }
   if (diag) {
     diag.streakCandidates = (diag.streakCandidates || 0) + candidates;
@@ -98,6 +130,57 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag) {
   }
   if (!best) return null;
   return { x: best.x, y: best.y, ox: best.ox, oy: best.oy, len: HL * 2 + 1, score: bestScore };
+}
+
+// Non-maximum suppression: candidates within r px are one object; keep
+// the highest-scoring. Input must be sorted desc by score. Returns at
+// most ASSOC_CANDS_PER_FRAME.
+function nmsCands(sorted, r) {
+  var kept = [];
+  for (var i = 0; i < sorted.length && kept.length < ASSOC_CANDS_PER_FRAME; i++) {
+    var c = sorted[i], dup = false;
+    for (var j = 0; j < kept.length; j++) {
+      var dx = c.x - kept[j].x, dy = c.y - kept[j].y;
+      if (dx * dx + dy * dy < r * r) { dup = true; break; }
+    }
+    if (!dup) kept.push(c);
+  }
+  return kept;
+}
+
+// Blob scan returning ALL passing candidates (sorted desc by score,
+// NMS'd) instead of only the single best — the association step needs
+// alternatives when the brightest blob is the bat, not the ball.
+// Each candidate: {x, y, score}.
+function scanBlobCands(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
+  var cands = [];
+  for (var y = ry0; y < ry1; y += 3) {
+    for (var x = rx0; x < rx1; x += 3) {
+      var i = (y * W + x) * 4;
+      var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
+      if (bright < 140) continue;
+      var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
+      var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
+      var motion = Math.min(m1, m2);
+      if (motion < 60) continue;
+      var blob = 0;
+      for (var yy = -2; yy <= 2; yy++) {
+        var yy2 = y + yy;
+        if (yy2 < 0 || yy2 >= H) continue;
+        for (var xx = -2; xx <= 2; xx++) {
+          var xx2 = x + xx;
+          if (xx2 < 0 || xx2 >= W) continue;
+          var j = (yy2 * W + xx2) * 4;
+          if ((d[j] + d[j + 1] + d[j + 2]) / 3 > 120) blob++;
+        }
+      }
+      if (blob < 4 || blob > 20) continue;
+      var score = motion * (bright / 255) * (blob < 10 ? blob / 10 : 1);
+      if (score > 0) cands.push({ x: x, y: y, score: score });
+    }
+  }
+  cands.sort(function (a, b) { return b.score - a.score; });
+  return nmsCands(cands, ASSOC_NMS_PX);
 }
 
 function detectBallTrail(frames, W, H, seed, times, diag) {
@@ -118,12 +201,25 @@ function detectBallTrail(frames, W, H, seed, times, diag) {
   //
   // diag (optional): filled with per-swing forensics — framesSearched,
   // blobPoints, streakPoints, bestBlobScore, streakCandidates,
-  // bestStreakAxisSum, bestStreakElong, bestStreakScore, failReason.
+  // bestStreakAxisSum, bestStreakElong, bestStreakScore, assocChains,
+  // assocBreaks, failReason.
+  //
+  // Cross-frame association (2026-09-26): the old code picked one global
+  // winner per frame independently, so trails combined the bat, body, net
+  // glints and ball into a Frankenstein that the fitter rejected with
+  // 100+ px RMSE. Now each frame contributes up to ASSOC_CANDS_PER_FRAME
+  // candidates, and a greedy chain keeps only points near the
+  // constant-velocity prediction from the last 1-2 accepted points. A
+  // rejected jump closes the chain and restarts it; the longest
+  // continuous run wins. This is the nearest-neighbor continuity the
+  // old code lacked.
   diag = diag || {};
   diag.framesSearched = 0;
   diag.blobPoints = 0;
   diag.streakPoints = 0;
   diag.bestBlobScore = 0;
+  diag.assocChains = 0;
+  diag.assocBreaks = 0;
   var rx0, rx1, ry0, ry1;
   if (seed) {
     var cx = seed.x * W, cy = seed.y * H;
@@ -135,51 +231,75 @@ function detectBallTrail(frames, W, H, seed, times, diag) {
     rx0 = Math.floor(W * 0.15); rx1 = Math.ceil(W * 0.85);
     ry0 = Math.floor(H * 0.08); ry1 = Math.ceil(H * 0.65);
   }
-  var trail = [];
+  // Per frame: candidate list (blob path first, streak fallback), each
+  // {x, y, score, via}.
+  var frameCands = [];
   for (var f = 1; f < frames.length - 1; f++) {
     diag.framesSearched++;
     var d = frames[f].data;
     var dp = frames[f - 1].data, dn = frames[f + 1].data;
     var t = (times && times[f] != null) ? times[f] : f / 30;
-    var best = null, bestScore = 0;
-    for (var y = ry0; y < ry1; y += 3) {
-      for (var x = rx0; x < rx1; x += 3) {
-        var i = (y * W + x) * 4;
-        var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
-        if (bright < 140) continue; // ball is bright white
-        var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
-        var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
-        var motion = m1 < m2 ? m1 : m2;
-        if (motion < 60) continue; // must be moving across frames, not static
-        // Blob check: ball-sized bright cluster, not a speck or a wall.
-        var blob = 0;
-        for (var dy = -2; dy <= 2; dy++) {
-          var yy = y + dy;
-          if (yy < 0 || yy >= H) continue;
-          for (var dx = -2; dx <= 2; dx++) {
-            var xx = x + dx;
-            if (xx < 0 || xx >= W) continue;
-            var j = (yy * W + xx) * 4;
-            if ((d[j] + d[j + 1] + d[j + 2]) / 3 > 120) blob++;
-          }
-        }
-        if (blob < 4 || blob > 20) continue;
-        var score = motion * (bright / 255) * (blob < 10 ? blob / 10 : 1);
-        if (score > bestScore) { bestScore = score; best = { x: x, y: y }; }
-      }
-    }
-    if (best && bestScore > BALL_SCORE_GATE) {
-      trail.push({ u: best.x, v: best.y, t: t, via: "blob" });
-      diag.blobPoints++;
-      if (bestScore > diag.bestBlobScore) diag.bestBlobScore = Math.round(bestScore);
+    var cands, via;
+    var blobs = scanBlobCands(d, dp, dn, W, H, rx0, rx1, ry0, ry1);
+    if (blobs.length && blobs[0].score > BALL_SCORE_GATE) {
+      cands = blobs; via = "blob";
+      if (blobs[0].score > diag.bestBlobScore) diag.bestBlobScore = Math.round(blobs[0].score);
     } else {
-      // Fallback: the ball may be a motion-blurred streak, not a blob.
-      var st = detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag);
-      if (st) {
-        trail.push({ u: st.x, v: st.y, t: t, via: "streak" });
-        diag.streakPoints++;
-      }
+      var streaks = [];
+      detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag, streaks);
+      cands = streaks; via = "streak";
     }
+    for (var ci = 0; ci < cands.length; ci++) cands[ci].via = via;
+    frameCands.push({ t: t, cands: cands });
+  }
+  // Greedy nearest-neighbor chain with a velocity prediction gate.
+  var chains = [];
+  var chain = [];
+  function closeChain() { if (chain.length) { chains.push(chain); chain = []; } }
+  for (var fi = 0; fi < frameCands.length; fi++) {
+    var fc = frameCands[fi];
+    if (!fc.cands.length) continue; // gap: coast on prediction, don't break
+    if (!chain.length) {
+      chain.push({ u: fc.cands[0].x, v: fc.cands[0].y, t: fc.t, via: fc.cands[0].via });
+      continue;
+    }
+    var last = chain[chain.length - 1];
+    var px, py, gate;
+    if (chain.length >= 2) {
+      var prev = chain[chain.length - 2];
+      var dt1 = last.t - prev.t, dt2 = fc.t - last.t;
+      var s = dt1 > 1e-6 ? dt2 / dt1 : 1; // scale for gaps / uneven cadence
+      px = last.u + (last.u - prev.u) * s;
+      py = last.v + (last.v - prev.v) * s;
+      gate = ASSOC_R_PRED_PX;
+    } else {
+      px = last.u; py = last.v; gate = ASSOC_R_FIRST_PX;
+    }
+    var best = null, bestD2 = Infinity;
+    for (var cj = 0; cj < fc.cands.length; cj++) {
+      var c = fc.cands[cj];
+      var ddx = c.x - px, ddy = c.y - py;
+      var dd2 = ddx * ddx + ddy * ddy;
+      if (dd2 < bestD2) { bestD2 = dd2; best = c; }
+    }
+    if (best && bestD2 <= gate * gate) {
+      chain.push({ u: best.x, v: best.y, t: fc.t, via: best.via });
+    } else {
+      // Jump rejected: close this chain, restart from this frame's best.
+      diag.assocBreaks++;
+      closeChain();
+      chain.push({ u: fc.cands[0].x, v: fc.cands[0].y, t: fc.t, via: fc.cands[0].via });
+    }
+  }
+  closeChain();
+  diag.assocChains = chains.length;
+  // Longest continuous run wins.
+  var trail = [];
+  for (var hi = 0; hi < chains.length; hi++) {
+    if (chains[hi].length > trail.length) trail = chains[hi];
+  }
+  for (var ti = 0; ti < trail.length; ti++) {
+    if (trail[ti].via === "blob") diag.blobPoints++; else diag.streakPoints++;
   }
   // Quality gates.
   if (trail.length < 5) { diag.failReason = "too few points (" + trail.length + ")"; return null; }
@@ -201,8 +321,14 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     detectBallTrail: detectBallTrail,
     detectStreakInFrame: detectStreakInFrame,
+    scanBlobCands: scanBlobCands,
+    nmsCands: nmsCands,
     BALL_SCORE_GATE: BALL_SCORE_GATE,
     BALL_MIN_DISPLACEMENT_PX: BALL_MIN_DISPLACEMENT_PX,
+    ASSOC_CANDS_PER_FRAME: ASSOC_CANDS_PER_FRAME,
+    ASSOC_NMS_PX: ASSOC_NMS_PX,
+    ASSOC_R_FIRST_PX: ASSOC_R_FIRST_PX,
+    ASSOC_R_PRED_PX: ASSOC_R_PRED_PX,
     STREAK_BRIGHT_MIN: STREAK_BRIGHT_MIN,
     STREAK_MOTION_MIN: STREAK_MOTION_MIN,
     STREAK_HALF: STREAK_HALF,

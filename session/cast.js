@@ -27,15 +27,11 @@ var pc = null, localStream = null, scanStream = null, scanning = false;
 var mode = null; // 'broadcast' | 'watch'
 var facingMode = "environment"; // phone broadcast camera; switchable
 
-// Build tag, derived from this script's own ?v= cache-buster: shown in the
-// footer so both devices can confirm they're running the same build.
-var CAST_BUILD = (function () {
-  try {
-    var s = (document.currentScript && document.currentScript.src) || "";
-    var m = s.match(/[?&]v=([0-9A-Za-z]+)/);
-    return m ? m[1] : "dev";
-  } catch (e) { return "dev"; }
-})();
+// NOTE (2026-09-26): this module used to stamp the footer build tag from
+// its own ?v= cache-buster, which lied whenever session.js shipped without
+// a cast.js change. The footer build tag and the Refresh button are now
+// owned solely by session.js (SESSION_BUILD, from session.js?v=) — cast.js
+// must not derive or overwrite them.
 
 // Unique per page load: lets the phone distinguish "the laptop refreshed"
 // (new sid -> rebroadcast the offer) from "the laptop's command channel
@@ -1148,22 +1144,6 @@ document.addEventListener("DOMContentLoaded", function () {
   el("btn-cast-close").addEventListener("click", closePanel);
   var switchCam = el("btn-switch-cam");
   if (switchCam) switchCam.addEventListener("click", switchCamera);
-  var buildTxt = "build " + CAST_BUILD;
-  var buildTag = el("build-tag");
-  if (buildTag) {
-    buildTag.textContent = buildTxt;
-    // The tag is a link: tapping it loads the newest build fresh from the
-    // server (cache-busting query), no tab-closing needed.
-    try { buildTag.href = location.pathname + "?fresh=" + Date.now(); } catch (e) {}
-  }
-  var buildTagTop = el("build-tag-top");
-  if (buildTagTop) buildTagTop.textContent = buildTxt;
-  var refreshBtn = el("btn-refresh");
-  if (refreshBtn) refreshBtn.addEventListener("click", function () {
-    // Cache-busting reload: no tab-closing needed, and the build tag
-    // afterwards proves the newest deploy is what's actually running.
-    location.replace(location.pathname + "?fresh=" + Date.now());
-  });
   wireManualToggle();
   el("btn-copy-code").addEventListener("click", function () {
     el("cast-text").select();

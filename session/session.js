@@ -120,6 +120,36 @@ var mEV = document.getElementById("m-ev");
 var mLA = document.getElementById("m-la");
 var mRec = document.getElementById("m-rec");
 
+// Footer build tag + Refresh, owned SOLELY by this module (2026-09-26).
+// Derived from this script's own ?v= cache-buster, so the tag can't drift
+// from the bundle actually running. (cast.js used to stamp the footer from
+// its own ?v= — the tag lied whenever session.js shipped without a cast.js
+// change. cast.js no longer touches the footer or the Refresh button.)
+var SESSION_BUILD = (function () {
+  try {
+    var s = (document.currentScript && document.currentScript.src) || "";
+    var m = s.match(/[?&]v=([0-9A-Za-z]+)/);
+    return m ? m[1] : "dev";
+  } catch (e) { return "dev"; }
+})();
+document.addEventListener("DOMContentLoaded", function () {
+  var t = document.getElementById("build-tag");
+  if (t) {
+    t.textContent = "build " + SESSION_BUILD;
+    // The tag is a link: tapping it loads the newest build fresh from the
+    // server (cache-busting query), no tab-closing needed.
+    try { t.href = location.pathname + "?fresh=" + Date.now(); } catch (e) {}
+  }
+  var tt = document.getElementById("build-tag-top");
+  if (tt) tt.textContent = "build " + SESSION_BUILD;
+  var rb = document.getElementById("btn-refresh");
+  if (rb) rb.addEventListener("click", function () {
+    // Cache-busting reload: no tab-closing needed, and the build tag
+    // afterwards proves the newest deploy is what's actually running.
+    location.replace(location.pathname + "?fresh=" + Date.now());
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /* Session state                                                       */
 /* ------------------------------------------------------------------ */
@@ -205,8 +235,34 @@ function initCamera(deviceId) {
   });
 }
 
+// Watchdog: if every track of the CURRENT stream ends (unplugged camera,
+// phone disconnect, OS sleep), stop the clip ring — a MediaRecorder on
+// dead tracks burns battery/CPU for zero bytes. Stream switches stop
+// their old tracks deliberately, but by the time those ended events fire
+// state.stream already points at the new stream (or null), so this only
+// ever stops the ring for the current stream going dark.
+function watchStreamEnded(stream) {
+  if (!stream || !stream.getTracks) return;
+  try {
+    stream.getTracks().forEach(function (tr) {
+      tr.addEventListener("ended", function () {
+        if (state.stream !== stream) return;
+        var live = false;
+        try {
+          var ts = stream.getTracks();
+          for (var i = 0; i < ts.length; i++) {
+            if (ts[i].readyState === "live") { live = true; break; }
+          }
+        } catch (e) {}
+        if (!live) stopClipRing();
+      });
+    });
+  } catch (e) {}
+}
+
 function attachLocalStream(stream) {
   state.stream = stream;
+  watchStreamEnded(stream);
   video.srcObject = stream;
   return new Promise(function (resolve) {
     var settled = false;
@@ -215,6 +271,10 @@ function attachLocalStream(stream) {
       settled = true;
       overlay.width = video.videoWidth || 1280;
       overlay.height = video.videoHeight || 720;
+      // The clip ring starts when the camera goes live — not only when
+      // Save is pressed — so manual "Save video" has buffered chunks.
+      // (2026-09-26: cold recorder errored "no data yet" on a live camera.)
+      ensureClipRing();
       resolve();
     }
     video.onloadedmetadata = done;
@@ -463,22 +523,26 @@ function solve3(M, rhs) {
 // Ballistic fit: p(t) = p0 + v0*t - 0.5*g*t^2 in z, Gauss-Newton over the
 // 6 params [x0,y0,z0,vx,vy,vz] minimizing reprojection error in px.
 // Exact perspective handling — no per-frame height assumption, no
-// image-space polynomial approximation. Returns {v0, p0, rmsePx} or null.
+// image-space polynomial approximation.
+// Returns {fit} on success, or {fit: null, stage} naming the rejection
+// stage — every null path reports WHERE it died. (2026-09-26 forensics:
+// seven swings all reported "trajectory fit failed" with no detail,
+// costing a whole cage session. Never return a bare null again.)
 // NOTE: v0 is the velocity at the FIRST TRAIL POINT (~1 frame after
 // contact); analyzeSwing gravity-corrects vz back to contact time.
 function ballisticFit(trail, Hh) {
   var n = trail.length;
-  if (n < 4) return null; // 2n equations, 6 unknowns — need margin
+  if (n < 4) return { fit: null, stage: "fewer than 4 points (" + n + ")" }; // 2n equations, 6 unknowns — need margin
   var G = 9.81;
   // Initial guess: unproject at contact height, linear fit for velocity.
   var ts = [], xs = [], ys = [];
   for (var k = 0; k < n; k++) {
     var w = imageToWorld(trail[k].u, trail[k].v, CONTACT_HEIGHT_M);
-    if (!w) return null;
+    if (!w) return { fit: null, stage: "unproject failed at init (point " + k + ")" };
     ts.push(trail[k].t - trail[0].t); xs.push(w.x); ys.push(w.y);
   }
   var fx = linFit(ts, xs), fy = linFit(ts, ys);
-  if (!fx || !fy) return null;
+  if (!fx || !fy) return { fit: null, stage: "linear init fit singular" };
   var th = [fx.c, fy.c, CONTACT_HEIGHT_M, fx.b, fy.b, 0]; // [x0,y0,z0,vx,vy,vz]
 
   function predict(th, t) {
@@ -493,24 +557,24 @@ function ballisticFit(trail, Hh) {
     var r = new Array(2 * n);
     var J = [];
     for (var k2 = 0; k2 < 2 * n; k2++) J.push([0, 0, 0, 0, 0, 0]);
-    var ok = true;
+    var ok = true, failAt = "";
     for (var k3 = 0; k3 < n; k3++) {
       var t = trail[k3].t - trail[0].t;
       var pr = predict(th, t);
-      if (!pr) { ok = false; break; }
+      if (!pr) { ok = false; failAt = "gauss-newton iter " + iter + " point " + k3; break; }
       r[2 * k3] = pr[0] - trail[k3].u;
       r[2 * k3 + 1] = pr[1] - trail[k3].v;
       for (var p = 0; p < 6; p++) {
         var h = Math.max(1e-7, Math.abs(th[p]) * 1e-6);
         var th2 = th.slice(); th2[p] += h;
         var pr2 = predict(th2, t);
-        if (!pr2) { ok = false; break; }
+        if (!pr2) { ok = false; failAt = "gauss-newton jacobian iter " + iter + " point " + k3 + " param " + p; break; }
         J[2 * k3][p] = (pr2[0] - pr[0]) / h;
         J[2 * k3 + 1][p] = (pr2[1] - pr[1]) / h;
       }
       if (!ok) break;
     }
-    if (!ok) return null;
+    if (!ok) return { fit: null, stage: "projection failed (" + failAt + ")" };
     // Normal equations: (J^T J) d = -J^T r.
     var JTJ = [], JTr = [0, 0, 0, 0, 0, 0];
     for (var a = 0; a < 6; a++) {
@@ -525,7 +589,7 @@ function ballisticFit(trail, Hh) {
       JTr[a] = -sr;
     }
     var d = solveN(JTJ, JTr);
-    if (!d) return null;
+    if (!d) return { fit: null, stage: "normal equations singular (iter " + iter + ")" };
     var maxStep = 0;
     for (var q = 0; q < 6; q++) {
       th[q] += d[q];
@@ -537,15 +601,18 @@ function ballisticFit(trail, Hh) {
   for (var k4 = 0; k4 < n; k4++) {
     var t4 = trail[k4].t - trail[0].t;
     var pr4 = predict(th, t4);
-    if (!pr4) return null;
+    if (!pr4) return { fit: null, stage: "projection failed (final residual, point " + k4 + ")" };
     se += (pr4[0] - trail[k4].u) * (pr4[0] - trail[k4].u) +
           (pr4[1] - trail[k4].v) * (pr4[1] - trail[k4].v);
   }
   return {
-    v0: { x: th[3], y: th[4], z: th[5] },
-    p0: { x: th[0], y: th[1], z: th[2] },
-    rmsePx: Math.sqrt(se / (2 * n)),
-    iters: iter + 1
+    fit: {
+      v0: { x: th[3], y: th[4], z: th[5] },
+      p0: { x: th[0], y: th[1], z: th[2] },
+      rmsePx: Math.sqrt(se / (2 * n)),
+      iters: iter + 1
+    },
+    stage: null
   };
 }
 
@@ -626,8 +693,9 @@ function analyzeSwing(trail) {
   if (!Hh.H || !Hh.Hinv) return { tracked: false, reason: "no calibration available" };
 
   // Joint 3D ballistic fit — the residual is the honest fit quality.
-  var fit = ballisticFit(trail, Hh);
-  if (!fit) return { tracked: false, reason: "trajectory fit failed" };
+  var fr = ballisticFit(trail, Hh);
+  if (!fr.fit) return { tracked: false, reason: "trajectory fit failed (" + fr.stage + ")" };
+  var fit = fr.fit;
   if (fit.rmsePx > FIT_RMSE_GATE_PX) {
     return { tracked: false, reason: "trajectory fit too loose (" + fit.rmsePx.toFixed(1) + " px RMSE)" };
   }
@@ -717,14 +785,39 @@ function downloadManualVideo() {
     setClipError("manual video: recorder not running — start the camera feed first");
     return;
   }
-  if (!clipHeaderChunk || !clipHeaderChunk.length) {
+  if (!clipHeaderChunk || !clipHeaderChunk.length || !clipRing.length) {
+    // Cold recorder (just started at camera-live or after a stream
+    // switch): wait for the first chunks instead of erroring
+    // immediately. (2026-09-26: "recorder produced no data yet" on a
+    // healthy camera — the recorder was seconds old.)
+    waitForClipData(0);
+    return;
+  }
+  dumpManualVideo();
+}
+
+// Poll for the first buffered chunks on a just-started recorder; give
+// up honestly after MANUAL_VIDEO_WAIT_MS.
+var MANUAL_VIDEO_WAIT_MS = 6000;
+function waitForClipData(elapsedMs) {
+  if (!sessionRecorder || sessionRecorder.state === "inactive") {
+    setClipError("manual video: recorder stopped while waiting");
+    return;
+  }
+  if (clipHeaderChunk && clipHeaderChunk.length && clipRing.length) {
+    dumpManualVideo();
+    return;
+  }
+  if (elapsedMs >= MANUAL_VIDEO_WAIT_MS) {
     setClipError("manual video: recorder produced no data yet — wait a few seconds");
     return;
   }
-  if (!clipRing.length) {
-    setClipError("manual video: no video buffered yet — wait a few seconds");
-    return;
-  }
+  var el = document.getElementById("clip-status");
+  if (el) { el.textContent = "Video: waiting for recorder…"; el.className = "clip-status"; }
+  setTimeout(function () { waitForClipData(elapsedMs + 500); }, 500);
+}
+
+function dumpManualVideo() {
   var chunks = clipRing.slice();
   var pending = chunks.length, bufs = new Array(chunks.length), failed = false;
   chunks.forEach(function (c, idx) {
@@ -786,14 +879,24 @@ function finishManualVideo(bufs) {
 /*     Only then: beep, log, assemble clip.                            */
 /*  If validation rejects, the provisional work is discarded silently. */
 /* ------------------------------------------------------------------ */
-function onSpike(spike) {
-  // Preserve the pre-roll window immediately (time-based, not count-based).
-  var tSpike = spike.t;
+// Pre-roll preservation, shared by motion spikes and crack triggers.
+// (2026-09-26: onBatCrack built a pseudo-pending-spike with no
+// tSpike/preChunks — captureSwingClip then selected zero chunks from a
+// healthy ring and every crack swing lost its clip.)
+// Returns ring chunks with t in [tSpike - CLIP_PREROLL_MS, tSpike].
+function preservePreRoll(tSpike) {
   var preStart = tSpike - CLIP_PREROLL_MS;
   var preChunks = [];
   for (var i = 0; i < clipRing.length; i++) {
     if (clipRing[i].t >= preStart && clipRing[i].t <= tSpike) preChunks.push(clipRing[i]);
   }
+  return preChunks;
+}
+
+function onSpike(spike) {
+  // Preserve the pre-roll window immediately (time-based, not count-based).
+  var tSpike = spike.t;
+  var preChunks = preservePreRoll(tSpike);
   // Start ball tracking NOW — don't wait for validation.
   var ballPromise = null, ballDiag = {};
   try {
@@ -1158,7 +1261,12 @@ function onBatCrack(info) {
   flashAudioMeter();
   // Pseudo-ps: no motion spike, so logSwing starts its own ball track
   // from the fresh motion seed. trigger:"crack" marks the source.
-  logSwing(false, { audio: true, spike: { t: (info && info.t) || Date.now() } });
+  // Shape matches what captureSwingClip expects: {spike, preChunks,
+  // tSpike} — the old shape omitted tSpike/preChunks and every crack
+  // swing's clip selection came back empty.
+  var tSpike = (info && info.t) || Date.now();
+  logSwing(false, { audio: true, spike: { t: tSpike }, tSpike: tSpike,
+    preChunks: preservePreRoll(tSpike) });
 }
 
 function updateAudioMeter() {
@@ -1314,7 +1422,9 @@ function startSession() {
   statusEl.textContent = "● Saving — swings logged to session";
   statusEl.className = "status recording";
   if (window.CageCast && CageCast.isConnected()) CageCast.session('live', 'Saving swings');
-  startClipRing(); // continuous recorder feeds the pre-roll ring
+  ensureClipRing(); // ring starts when the camera goes live
+  // (attachLocalStream/onRemoteStream) and stays buffered — never throw
+  // away pre-Save history. Restarts only on a stream switch.
   btnStart.classList.add("hidden");
   btnStop.classList.remove("hidden");
   btnStop.disabled = false;
@@ -1334,7 +1444,9 @@ function startSession() {
 
 function stopSession() {
   state.recording = false;
-  stopClipRing();
+  // The clip ring keeps running while the camera is live (it started at
+  // camera-live, not at Save) — manual "Save video" keeps working after
+  // Done, and the next Save has instant pre-roll. ~6MB bounded ring.
   // Detector keeps running if the camera is live — only saving stops.
   if (window.CageCast && CageCast.isConnected()) {
     CageCast.session(cameraLive() ? 'live' : 'idle', cameraLive() ? 'Not saving' : 'Session ended');
@@ -1362,7 +1474,6 @@ function stopSession() {
 /* enough in practice; if clips start blocky, shorten the timeslice.   */
 /* ------------------------------------------------------------------ */
 var clipRing = [];           // Blobs, oldest first
-var CLIP_CHUNK_MS = 500;
 var CLIP_CHUNK_MS = 500; // MediaRecorder timeslice
 var CLIP_PREROLL_MS = 4000; // 4 s pre-roll: set, feet, step, load
 var CLIP_POSTROLL_MS = 2000; // 2 s post-roll: follow-through
@@ -1480,7 +1591,7 @@ function captureSwingClip(swingId, ps) {
     setClipError("no video header — recorder produced no data");
     return;
   }
-  var tTrigger = ps ? ps.tSpike : Date.now();
+  var tTrigger = (ps && isFinite(ps.tSpike)) ? ps.tSpike : Date.now();
   // Pre-roll chunks were preserved at spike time (ps.preChunks) — the ring
   // is a sliding window and the swing's pre-roll may have been evicted by
   // the time validation finishes. Use the preserved pre-chunks, then take
@@ -1491,22 +1602,11 @@ function captureSwingClip(swingId, ps) {
   // Wait for post-roll to accumulate, then assemble.
   setTimeout(function () {
     try {
-      var t0 = tTrigger - CLIP_PREROLL_MS, t1 = tTrigger + CLIP_POSTROLL_MS;
-      var sel = [];
-      if (preservedPre) {
-        // Use the spike-time pre-roll; add post-trigger chunks from the ring.
-        for (var i = 0; i < preservedPre.length; i++) sel.push(preservedPre[i]);
-        for (var j = 0; j < clipRing.length; j++) {
-          var pc = clipRing[j];
-          if (pc.t > tTrigger && pc.t <= t1) sel.push(pc);
-        }
-      } else {
-        // No preserved pre-roll (manual mark or old path): select by time.
-        for (var k = 0; k < clipRing.length; k++) {
-          var c = clipRing[k];
-          if (c.t >= t0 && c.t <= t1) sel.push(c);
-        }
-      }
+      // Chunk selection is the pure selectClipWindow() helper
+      // (clip-assemble.js) — unit-tested, shared by the spike, crack,
+      // and manual paths.
+      var sel = selectClipWindow(preservedPre, clipRing, tTrigger,
+        CLIP_PREROLL_MS, CLIP_POSTROLL_MS);
       if (!sel.length) {
         // Diagnose: is the recorder stalled? (2026-09-24: ring full of stale
         // chunks, none in window — recorder stopped producing data.)
@@ -1771,6 +1871,7 @@ window.SessionApp.onRemoteStream = function (stream) {
       try { state.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
     }
     state.stream = stream;
+    watchStreamEnded(stream);
     video.srcObject = stream;
     video.onloadedmetadata = function () {
       overlay.width = video.videoWidth || 1280;
@@ -1786,6 +1887,8 @@ window.SessionApp.onRemoteStream = function (stream) {
       "Viewing the phone's camera — analysis runs on this laptop.<br>" +
       "Load the phone's calibration file below for accurate numbers.";
     setProfileWarning("Using the laptop calibration with the phone camera: numbers are approximate until you load the phone's own calibration export.");
+    // Clip ring starts when the camera goes live (same as the local path).
+    ensureClipRing();
   };
   window.SessionApp.loadProfile = function (p) {
     if (!p || p.format !== "stadium-slugger/cage-calibration" ||

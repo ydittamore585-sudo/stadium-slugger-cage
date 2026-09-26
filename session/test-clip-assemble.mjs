@@ -190,7 +190,90 @@ check("window selects nothing -> null",
     check("no nested EBML header in media",
       !(clip.data[bodyStart + 4] === 0x1a && clip.data[bodyStart + 5] === 0x45),
       "bytes at cluster+4: " + clip.data[bodyStart + 4].toString(16));
+    // The media body must not start with a Cluster ID either: the original
+    // cluster header is dropped because we wrap blocks in our own
+    // synthesized cluster (nested clusters are invalid WebM).
+    // Synth header = Cluster ID (4) + unknown size (8) + Timecode (3).
+    var contentAt = ms + 4 + 8 + 3;
+    var nested = clip.data[contentAt] === 0x1f && clip.data[contentAt + 1] === 0x43 &&
+      clip.data[contentAt + 2] === 0xb6 && clip.data[contentAt + 3] === 0x75;
+    check("no nested cluster in media", !nested,
+      "bytes at content: " + asm.hexBytes(clip.data, contentAt, 4));
   }
+})();
+
+// --- 2026-09-26: mid-element media start (field failure) --------------
+// In a long session the ring's oldest chunk starts mid-element; the old
+// code required element alignment at offset 0 and rejected a healthy
+// 24-chunk / 7.4MB ring with "media verify failed at offset 0".
+// The bad fixture has a real second cluster at 980419 — a mid-ring
+// window starting mid-element must now recover at that boundary.
+(function () {
+  var headerBytes = bad.subarray(0, 65536);
+  check("findClusterBoundary finds the real 2nd cluster",
+    asm.findClusterBoundary(bad, 136) === 980419,
+    "got " + asm.findClusterBoundary(bad, 136));
+  check("findClusterBoundary: none past the last",
+    asm.findClusterBoundary(bad, 980420) === -1);
+  // Mid-ring window: starts at arbitrary mid-element offset 500123
+  // (deep inside cluster 1), spans the cluster-2 boundary.
+  var media = bad.subarray(500123);
+  check("mid-ring starts mid-element",
+    asm.describeId(media, 0).indexOf("not a media id") >= 0,
+    asm.describeId(media, 0));
+  var clip = asm.assembleClip(headerBytes, [{ bytes: media, t: 500 }],
+    500, 100000, 100000, 0);
+  check("mid-ring window assembles (field scenario)", !!clip,
+    asm.assembleClip.lastReason);
+  if (clip) {
+    var ms = asm.findFirstCluster(clip.data);
+    check("rebuilt mid-ring clip has init + cluster", ms === 135, "at " + ms);
+    check("mid-ring clip has media", clip.data.length > 1000000,
+      "got " + clip.data.length);
+  }
+})();
+
+// --- 2026-09-26: forensics on unrecoverable media ----------------------
+// When no verified cluster boundary exists, the reject message must say
+// what was actually there — hex of the first 16 bytes + what parseId saw.
+(function () {
+  var headerBytes = bad.subarray(0, 65536);
+  var garbage = new Uint8Array(64);
+  for (var g = 0; g < 64; g++) garbage[g] = 0xab;
+  var clip = asm.assembleClip(headerBytes, [{ bytes: garbage, t: 500 }],
+    500, 100000, 100000, 0);
+  check("garbage media -> null", !clip);
+  var reason = asm.assembleClip.lastReason;
+  check("forensics: first-bytes hex", reason.indexOf("first bytes:") >= 0, reason);
+  check("forensics: shows the 0xab bytes", reason.indexOf("ab ab ab ab") >= 0, reason);
+  check("forensics: parseId verdict", reason.indexOf("parseId") >= 0 &&
+    reason.indexOf("not a media id") >= 0, reason);
+})();
+
+// --- 2026-09-26: selectClipWindow (Bug A — crack pseudo-ps) -----------
+(function () {
+  // 24-chunk ring, 500ms spacing — the healthy field ring shape.
+  var ring = [];
+  for (var i = 0; i < 24; i++) ring.push({ blob: null, t: i * 500 });
+  // Crack-style pseudo-ps, exactly the shape onBatCrack now builds:
+  // {spike, preChunks, tSpike} with pre-roll preserved at spike time.
+  var tSpike = 8000;
+  var preChunks = ring.filter(function (c) { return c.t >= tSpike - 4000 && c.t <= tSpike; });
+  check("crack pre-roll is 9 chunks", preChunks.length === 9, "got " + preChunks.length);
+  var pseudoPs = { audio: true, spike: { t: tSpike }, tSpike: tSpike, preChunks: preChunks };
+  var sel = asm.selectClipWindow(pseudoPs.preChunks, ring, pseudoPs.tSpike, 4000, 2000);
+  check("crack pseudo-ps selects chunks", sel.length === 13, "got " + sel.length);
+  check("crack selection spans pre+post",
+    sel.length && sel[0].t === 4000 && sel[sel.length - 1].t === 10000,
+    sel.length ? (sel[0].t + "–" + sel[sel.length - 1].t) : "empty");
+  // Manual path (no preserved pre-roll): pure time-window selection.
+  var selM = asm.selectClipWindow(null, ring, 8000, 4000, 2000);
+  check("manual path selects the time window", selM.length === 13 &&
+    selM[0].t === 4000 && selM[selM.length - 1].t === 10000,
+    "got " + selM.length);
+  // The old Bug A shape (no tSpike) must not silently select garbage.
+  var selBad = asm.selectClipWindow(preChunks, ring, undefined, 4000, 2000);
+  check("undefined trigger selects nothing", selBad.length === 0, "got " + selBad.length);
 })();
 
 console.log(failures ? "\n" + failures + " FAILURES" : "\nall pass");

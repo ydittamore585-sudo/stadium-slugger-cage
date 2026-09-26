@@ -3,7 +3,8 @@
 // MQTT link — deterministic, no network, no browser.
 //
 // Scenarios:
-//   0. footer build tag derives from the script's own ?v= cache-buster
+//   0. footer ownership: cast.js must NOT stamp #build-tag from its own
+//      ?v= — session.js owns the build tag and Refresh (SESSION_BUILD).
 //   1. THE REPORTED BUG: a duplicate/late answer arriving when the phone's
 //      peer connection is already "stable" must be ignored silently — never
 //      "Pairing failed — try again." with no way back
@@ -197,9 +198,19 @@ const lastOffer = (link) => link.sent.filter((m) => m.t === "offer").slice(-1)[0
 
 // ---------------------------------------------------------------------------
 async function testBuildTag() {
-  console.log("0. build tag");
+  console.log("0. build tag ownership (session.js owns it, not cast.js)");
   const env = makeEnv();
-  ok(env.elements["build-tag"].textContent === "build testbuild", "footer build tag derives from ?v= (got: " + env.elements["build-tag"].textContent + ")");
+  // cast.js must leave the footer alone: no #build-tag / #build-tag-top
+  // stamp from its own ?v=, no #btn-refresh wiring. session.js owns all
+  // three via SESSION_BUILD.
+  const bt = env.elements["build-tag"], btt = env.elements["build-tag-top"],
+        rb = env.elements["btn-refresh"];
+  ok(!bt || bt.textContent === "",
+    "cast.js leaves #build-tag alone (got: " + (bt && bt.textContent) + ")");
+  ok(!btt || btt.textContent === "",
+    "cast.js leaves #build-tag-top alone");
+  ok(!rb || (rb._handlers.click || []).length === 0,
+    "cast.js does not wire #btn-refresh");
 }
 
 async function testDuplicateAnswerIgnored() {

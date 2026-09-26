@@ -13,8 +13,11 @@
  *  2. Split the header chunk into init segment (EBML..Tracks) + media.
  *  3. Walk the media bytes element-by-element; keep only COMPLETE
  *     clusters/blocks. A truncated tail block is dropped, never shipped.
- *  4. Start media at the first cluster boundary (drops a partial leading
- *     cluster rather than shipping undecodable P-frames).
+ *  4. Start media at the first verifiable offset: the offset itself when
+ *     it begins valid elements; otherwise the first VERIFIED cluster
+ *     boundary ahead (Cluster ID + parseable size + Timecode child),
+ *     dropping the partial leading bytes; otherwise the first run of
+ *     2+ consecutive valid elements (single-cluster windows).
  *  5. Duration comes from chunk timestamps, not from a stopwatch around
  *     the post-roll wait.
  *  6. Fail closed: returns null when there isn't enough valid media —
@@ -177,6 +180,120 @@ function walkUnknownCluster(u8, off) {
   return lastGood;
 }
 
+// Scan forward from `from` for the first VERIFIED cluster boundary:
+// Cluster ID + parseable size + Timecode child. This is the same
+// verification discipline walkUnknownCluster uses for cluster
+// continuation — a bare 4-byte ID pattern in video data is not enough.
+// (2026-09-26: in a long session the ring's oldest chunk starts
+// mid-element; verifiedMediaEnd requires element alignment at offset 0
+// and found nothing parseable in a healthy 7.4 MB ring. Start media at
+// the first verified cluster instead, dropping the leading partial
+// bytes.)
+// Returns the offset, or -1 when no verified cluster exists.
+function findClusterBoundary(u8, from) {
+  for (var cur = from; cur + 12 <= u8.length; cur++) {
+    if (u8[cur] === 0x1f && u8[cur + 1] === 0x43 &&
+        u8[cur + 2] === 0xb6 && u8[cur + 3] === 0x75) {
+      var cSz = parseSize(u8, cur + 4);
+      if (!cSz) continue;
+      var tOff = cur + 4 + cSz.len;
+      var tId = parseId(u8, tOff);
+      if (tId && tId.val === TIMECODE_ID) return cur;
+    }
+  }
+  return -1;
+}
+
+// Advance past a verified cluster's header (ID + size) and its Timecode
+// child, so the media body is raw blocks. cb must come from
+// findClusterBoundary. The caller wraps the blocks in its own
+// synthesized cluster header (timecode supplied separately).
+function skipClusterHeader(u8, cb) {
+  var cSz = parseSize(u8, cb + 4);
+  var off = cb + 4 + (cSz ? cSz.len : 0);
+  var tId = parseId(u8, off);
+  if (tId && tId.val === TIMECODE_ID) {
+    var tSz = parseSize(u8, off + tId.len);
+    if (tSz && !tSz.unknown) off += tId.len + tSz.len + tSz.val;
+  }
+  return off;
+}
+
+// Fallback when no cluster boundary exists ahead (e.g. a window inside a
+// single-cluster recording): the first offset beginning 2+ consecutive
+// valid media elements. Two consecutive valid elements is strong
+// structural verification — a single byte-pattern match in video data
+// is not enough. Cluster IDs are excluded (tier 1's job).
+// Returns the offset, or -1.
+function findElementRun(u8, from) {
+  for (var cur = from; cur < u8.length; cur++) {
+    var id = parseId(u8, cur);
+    if (!id || !isMediaId(id.val) || id.val === CLUSTER_ID) continue;
+    var sz = parseSize(u8, cur + id.len);
+    if (!sz || sz.unknown) continue;
+    var eEnd = cur + id.len + sz.len + sz.val;
+    if (eEnd <= cur + id.len + sz.len || eEnd > u8.length) continue;
+    var id2 = parseId(u8, eEnd);
+    if (!id2 || !isMediaId(id2.val) || id2.val === CLUSTER_ID) continue;
+    var sz2 = parseSize(u8, eEnd + id2.len);
+    if (!sz2 || sz2.unknown) continue;
+    var eEnd2 = eEnd + id2.len + sz2.len + sz2.val;
+    if (eEnd2 > u8.length) continue;
+    return cur;
+  }
+  return -1;
+}
+
+// First n bytes at off as lowercase hex, space-separated — for reject
+// forensics, so the next field run says what was actually there instead
+// of us guessing.
+function hexBytes(u8, off, n) {
+  var parts = [];
+  for (var i = 0; i < n && off + i < u8.length; i++) {
+    var h = u8[off + i].toString(16);
+    parts.push(h.length < 2 ? "0" + h : h);
+  }
+  return parts.join(" ");
+}
+
+// What parseId sees at off, in words — distinguishes "truncated input"
+// from "misaligned video data" from "unknown element id".
+function describeId(u8, off) {
+  var id = parseId(u8, off);
+  if (!id) return "parseId=null (fewer than 4 bytes or no length marker)";
+  return "parseId len=" + id.len + " val=0x" + id.val.toString(16) +
+    (isMediaId(id.val) ? " (known media id)" : " (not a media id)");
+}
+
+/* Pure chunk-selection for swing clips (extracted from captureSwingClip
+ * so it can be unit-tested — 2026-09-26: a crack trigger built a
+ * pseudo-pending-spike with no tSpike, and the inline selection silently
+ * produced zero chunks from a healthy ring).
+ * preservedPre: ring chunks preserved at spike time (or null/empty).
+ * ring: the live clip ring, entries {bytes, t}.
+ * Returns the selected entries in order. Never throws.
+ */
+function selectClipWindow(preservedPre, ring, tTrigger, preMs, postMs) {
+  var sel = [];
+  if (typeof tTrigger !== "number" || !isFinite(tTrigger)) return sel;
+  var t1 = tTrigger + postMs;
+  var i;
+  if (preservedPre && preservedPre.length) {
+    for (i = 0; i < preservedPre.length; i++) sel.push(preservedPre[i]);
+    for (i = 0; i < ring.length; i++) {
+      var pc = ring[i];
+      if (pc.t > tTrigger && pc.t <= t1) sel.push(pc);
+    }
+  } else {
+    var t0 = tTrigger - preMs;
+    for (i = 0; i < ring.length; i++) {
+      var c = ring[i];
+      if (c.t >= t0 && c.t <= t1) sel.push(c);
+    }
+  }
+  return sel;
+}
+
 /* Assemble a clip.
  * headerBytes: Uint8Array, the first MediaRecorder chunk (init segment).
  * chunks: [{bytes: Uint8Array, t: number}] — arrival timestamp t in ms.
@@ -228,25 +345,46 @@ function assembleClip(headerBytes, chunks, tTrigger, preMs, postMs, minMs) {
     var fc = findFirstCluster(media);
     if (fc > 0) mOff = fc;
   }
-  // If the first selected chunk starts with a Cluster ID, drop it — we're
-  // wrapping in our own cluster header (avoids nested clusters).
-  if (media.length >= mOff + 4 && media[mOff] === 0x1f && media[mOff + 1] === 0x43 &&
-      media[mOff + 2] === 0xb6 && media[mOff + 3] === 0x75) {
-    var cSz = parseSize(media, mOff + 4);
-    if (cSz) {
-      mOff = mOff + 4 + cSz.len;
-      // Also skip its Timecode child if present (we supply our own).
-      var tId = parseId(media, mOff);
-      if (tId && tId.val === TIMECODE_ID) {
-        var tSz = parseSize(media, mOff + tId.len);
-        if (tSz && !tSz.unknown) mOff += tId.len + tSz.len + tSz.val;
-      }
-    }
+  // If the media starts with a verified cluster boundary (aligned chunk,
+  // or the header chunk's own cluster after the EBML split), drop its
+  // header + Timecode child — we wrap the raw blocks in our own
+  // synthesized cluster header, and nested clusters are invalid WebM.
+  if (findClusterBoundary(media, mOff) === mOff) {
+    mOff = skipClusterHeader(media, mOff);
   }
-
+  // Start media at the first verifiable offset.
+  // Timeslice chunks don't align to EBML elements: a mid-ring selection
+  // usually starts mid-element, where parseId sees garbage and a walk
+  // from offset 0 finds nothing parseable. (2026-09-26: the old code
+  // required element alignment at offset 0 and rejected a healthy
+  // 24-chunk / 7.4MB ring with "media verify failed at offset 0".)
+  //   1. mOff itself, when it begins valid elements (aligned chunk —
+  //      the pre-fix behavior, kept so valid media never regresses);
+  //   2. otherwise the first VERIFIED cluster boundary ahead (Cluster ID
+  //      + parseable size + Timecode child), dropping the partial
+  //      leading bytes;
+  //   3. otherwise the first 2+ consecutive valid elements (windows
+  //      inside a single-cluster recording have no boundary to find).
   var mediaEnd = verifiedMediaEnd(media, mOff);
+  if (mediaEnd <= mOff) {
+    var cb = findClusterBoundary(media, mOff);
+    if (cb >= 0) {
+      // Skip the cluster header + its Timecode child — we wrap the raw
+      // blocks in our own synthesized cluster header (avoids nested
+      // clusters).
+      mOff = skipClusterHeader(media, cb);
+    } else {
+      var er = findElementRun(media, mOff);
+      if (er < 0) return reject("no verified media start in " + media.length +
+        "b of media (" + sel.length + " chunks selected); first bytes: " +
+        hexBytes(media, mOff, 16) + "; " + describeId(media, mOff));
+      mOff = er;
+    }
+    mediaEnd = verifiedMediaEnd(media, mOff);
+  }
   if (mediaEnd <= mOff) return reject("media verify failed at offset " + mOff +
-    " of " + media.length + "b (" + sel.length + " chunks selected)");
+    " of " + media.length + "b (" + sel.length + " chunks selected); first bytes: " +
+    hexBytes(media, mOff, 16) + "; " + describeId(media, mOff));
 
   var out = new Uint8Array(initSeg.length + clusterHeader.length + (mediaEnd - mOff));
   out.set(initSeg, 0);
@@ -280,6 +418,12 @@ if (typeof module !== "undefined" && module.exports) {
     clipFileName: clipFileName,
     findFirstCluster: findFirstCluster,
     verifiedMediaEnd: verifiedMediaEnd,
+    findClusterBoundary: findClusterBoundary,
+    skipClusterHeader: skipClusterHeader,
+    findElementRun: findElementRun,
+    selectClipWindow: selectClipWindow,
+    hexBytes: hexBytes,
+    describeId: describeId,
     synthClusterHeader: synthClusterHeader
   };
 }
