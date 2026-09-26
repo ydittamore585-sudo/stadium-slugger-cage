@@ -861,30 +861,49 @@ function downloadSwingsZip() {
   function status(msg) {
     if (statusEl) { statusEl.textContent = msg; statusEl.className = "clip-status"; }
   }
-  var entries = [], i = 0, total = swingClips.length;
+  var entries = [], i = 0, total = swingClips.length, skipped = 0;
   function readNext() {
     if (i >= total) { buildZip(); return; }
     var c = swingClips[i];
+    // A clip with no blob (assembly failed silently) must not kill the
+    // whole zip — skip it and keep going. (2026-09-26: one null blob
+    // threw inside readAsArrayBuffer and the download never fired.)
+    if (!c || !c.blob || typeof c.blob.size !== "number") {
+      skipped++; i++; readNext(); return;
+    }
     status("Zipping swing " + (i + 1) + "/" + total + "…");
     var rd = new FileReader();
     rd.onload = function () {
-      entries.push({
-        name: (typeof clipFileName === "function")
-          ? clipFileName(state.sessionStart, c.id)
-          : "swing-" + c.id + ".webm",
-        data: new Uint8Array(rd.result)
-      });
+      try {
+        entries.push({
+          name: (typeof clipFileName === "function")
+            ? clipFileName(state.sessionStart, c.id)
+            : "swing-" + c.id + ".webm",
+          data: new Uint8Array(rd.result)
+        });
+      } catch (e) {
+        skipped++;
+      }
       i++;
       readNext(); // sequential: never hold more than one unread copy at a time
     };
     rd.onerror = function () {
-      setClipError("couldn't read swing " + c.id + " clip — zip stopped at " +
-        i + "/" + total);
+      skipped++; i++; readNext();
     };
-    rd.readAsArrayBuffer(c.blob);
+    try {
+      rd.readAsArrayBuffer(c.blob);
+    } catch (e) {
+      skipped++; i++; readNext();
+    }
   }
   function buildZip() {
     try {
+      if (!entries.length) {
+        setClipError("No readable swing clips — " + skipped + " of " + total +
+          " couldn't be read. The clips may still play in the swing log above.");
+        status("Zip failed — no readable clips");
+        return;
+      }
       // zipBuild returns small parts; new Blob(parts) skips one big
       // concatenation — peak memory stays ~1x the clips, not 2x.
       var built = zipBuild(entries);

@@ -45,8 +45,8 @@ button.big {
 #btn-stop { background: #a02a2a; color: #fff; }
 #btn-download { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
 /* (2026-09-24: these rendered with near-white browser defaults in dark mode — unreadable.) */
-#btn-manual-video, #btn-sound { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
-#btn-manual-video:hover, #btn-sound:hover { background: #3568b8; }
+#btn-download-swings, #btn-sound { background: #2a5aa0; color: #fff; padding: 16px; border: none; border-radius: 12px; font-size: 1rem; font-weight: 700; cursor: pointer; }
+#btn-download-swings:hover, #btn-sound:hover { background: #3568b8; }
 #gopro-panel { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2c3a5e; border-radius: 12px; background: rgba(255,255,255,0.04); }
 #gopro-panel button.big { padding: 12px; font-size: 1rem; }
 #btn-gopro-connect, #btn-gopro-ble { flex: 1; padding: 12px; font-size: 1rem; font-weight: 700; border: 1px solid #2c3a5e; border-radius: 12px; background: #232c47; color: #cfd8f3; cursor: pointer; }
