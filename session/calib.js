@@ -11,6 +11,38 @@
  *   batter's box inside edges at (0, +/-1.5 ft)
  *   plate corners / apex near origin
  */
+
+// --- Pure ball-truth helpers (Node-testable; no DOM) ----------------------
+// Hand-labeled ball positions: [{t (sec), x, y (video px)}]. Kept outside
+// the IIFE so Node tests can require them via module.exports below.
+function addBallPoint(points, pt) {
+  return (points || []).concat([{ t: +pt.t, x: Math.round(pt.x), y: Math.round(pt.y) }]);
+}
+function removeBallPoint(points, idx) {
+  points = points || [];
+  if (idx < 0 || idx >= points.length) return points.slice();
+  return points.slice(0, idx).concat(points.slice(idx + 1));
+}
+function ballTruthFileName(swingId, yyyymmdd) {
+  return (swingId === null || swingId === undefined)
+    ? "ball-truth-manual-" + yyyymmdd + ".json"
+    : "ball-truth-swing" + swingId + "-" + yyyymmdd + ".json";
+}
+function buildBallTruth(o) {
+  o = o || {};
+  return {
+    type: "ball-truth",
+    swingId: (o.swingId === undefined) ? null : o.swingId,
+    build: o.build || "dev",
+    videoName: o.videoName || "",
+    durationSec: (o.durationSec === undefined) ? null : o.durationSec,
+    fps: o.fps || 30,
+    points: (o.points || []).map(function (p) {
+      return { t: +p.t, x: Math.round(p.x), y: Math.round(p.y) };
+    })
+  };
+}
+
 (function () {
   "use strict";
 
@@ -59,6 +91,15 @@
   var lastHeightScale = null;   // Step 12: bat-measured {pxPerM,...}, survives re-solves
   var heightActive = false, heightTaps = []; // Step 12: bat tap mode
   var verifyActive = false, verifyTap = null; // Step 1: ball verification mode
+
+  // Ball annotation ("tap the ball") — hand-labeled ground truth, separate
+  // from the calibration/height/verify tap modes (never touches taps/profile).
+  var ballMode = false, ballPoints = []; // {t (sec), x, y (video px)}
+  var ballSwingId = null, ballVideoName = "";
+  var ballTouchHandler = null;
+  var tapVideoLoaded = false; // a clip/file is currently loaded in the tapper
+  // Hoisted out of wire(): shared by the file input and swing-card loads.
+  var savedStream = null, tapVideoURL = null;
 
   // --- Calibration persistence -----------------------------------------
   // The laptop's solved calibration survives a page refresh: every
@@ -389,6 +430,7 @@
   }
 
   function startTapMode() {
+    stopBallMode();
     var v = videoEl();
     if (!v || !v.videoWidth) {
       setStatus("No live phone feed — pair the phone first.");
@@ -464,6 +506,7 @@
     }
     stopTapMode();
     stopVerifyMode();
+    stopBallMode();
     var v = videoEl();
     if (!v || !v.videoWidth) {
       setStatus("No live phone feed — pair the phone first.");
@@ -545,6 +588,7 @@
     }
     stopTapMode();
     stopHeightMode();
+    stopBallMode();
     var v = videoEl();
     if (!v || !v.videoWidth) {
       setStatus("No live phone feed — pair the phone first.");
@@ -663,6 +707,7 @@
   }
 
   // Public API
+  if (typeof window !== "undefined") {
   window.PhoneCalib = {
     open: startTapMode,
     close: close,
@@ -675,6 +720,7 @@
     isActive: function () { return active; },
     getProfile: function () { return profile; },
   };
+  }
 
   // === Auto-recalibration: NCC patch matching ===
   // Calibrate once manually (saves refPatches). Next session, auto-adjust
@@ -1111,6 +1157,189 @@
     if (vb) vb.disabled = false;
   }
 
+  // === Ball annotation ("tap the ball") — ground-truth labeling ==========
+  // Yancy hand-labels ball positions frame-by-frame on a loaded swing clip
+  // (or any video file). Points are {t (sec), x, y} in video pixels, drawn
+  // as numbered amber markers on their own layer. Export downloads the
+  // trail as JSON for detector tuning. Mutually exclusive with the
+  // calibration/height/verify tap modes.
+
+  // Load a video into the tapper: Blob/File from the file input or a swing
+  // card's clip blob. Preserves the live stream; the "Live" button restores
+  // it. opts: {label, swingId}.
+  function loadTapVideo(blobOrFile, opts) {
+    var v = videoEl();
+    if (!v || !blobOrFile) return false;
+    opts = opts || {};
+    stopBallMode();
+    // Save the live stream only the first time — loading a second clip must
+    // not clobber the way back to live. (2026-09-26: the old file-input
+    // handler overwrote savedStream with null on a second load.)
+    if (v.srcObject) savedStream = v.srcObject;
+    if (tapVideoURL) { try { URL.revokeObjectURL(tapVideoURL); } catch (e) {} tapVideoURL = null; }
+    tapVideoURL = URL.createObjectURL(blobOrFile);
+    v.srcObject = null;
+    v.src = tapVideoURL;
+    v.controls = true;
+    try { v.play().catch(function () {}); } catch (e) {}
+    tapVideoLoaded = true;
+    ballSwingId = (opts.swingId === undefined || opts.swingId === null) ? null : opts.swingId;
+    ballVideoName = opts.label || (blobOrFile.name || "video");
+    ballPoints = [];
+    var lv = $("calib-live");
+    if (lv) lv.classList.remove("hidden");
+    var panel = $("calib-panel");
+    if (panel) panel.classList.remove("hidden");
+    var tools = $("ball-tap-tools");
+    if (tools) tools.classList.remove("hidden");
+    updateBallUI();
+    setStatus("Video loaded — hit \"\u26BE Tap ball\", pause/scrub to a frame, tap the ball. Step one frame with \u25C0 \u25B6.");
+    return true;
+  }
+
+  function startBallMode() {
+    if (!tapVideoLoaded) {
+      setStatus("Load a video first (\uD83D\uDCF9 Tap video, or \u26BE Tap ball on a swing card).");
+      return;
+    }
+    var v = videoEl();
+    if (!v || !v.videoWidth) {
+      setStatus("Video isn't ready yet — wait a second and try again.");
+      return;
+    }
+    stopTapMode(); stopHeightMode(); stopVerifyMode();
+    ballMode = true;
+    // Listen on the container, not the video: overlay layers can swallow
+    // clicks on the video element itself. videoPos() maps to video pixels.
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.addEventListener("click", onBallClick);
+      ballTouchHandler = function (ev) {
+        if (ev.touches && ev.touches.length > 0) {
+          onBallClick(ev.touches[0]);
+          ev.preventDefault();
+        }
+      };
+      wrap.addEventListener("touchstart", ballTouchHandler, { passive: false });
+      wrap.style.cursor = "crosshair";
+    }
+    drawBallMarkers();
+    updateBallUI();
+    window.addEventListener("resize", drawBallMarkers);
+    setStatus("Ball-tap mode: tap the ball in the video. Tap a marker to delete it.");
+  }
+
+  function stopBallMode() {
+    if (!ballMode) return;
+    ballMode = false;
+    var wrap = $("camera-wrap");
+    if (wrap) {
+      wrap.removeEventListener("click", onBallClick);
+      if (ballTouchHandler) wrap.removeEventListener("touchstart", ballTouchHandler);
+      if (!heightActive && !verifyActive && !active) wrap.style.cursor = "";
+    }
+    ballTouchHandler = null;
+    window.removeEventListener("resize", drawBallMarkers);
+    var layer = $("ball-markers");
+    if (layer) layer.innerHTML = "";
+    updateBallUI();
+  }
+
+  function onBallClick(ev) {
+    if (!ballMode) return;
+    var p = videoPos(ev);
+    if (!p) return;
+    var v = videoEl();
+    var t = v ? +v.currentTime.toFixed(3) : 0;
+    ballPoints = addBallPoint(ballPoints, { t: t, x: p.u, y: p.v });
+    drawBallMarkers();
+    updateBallUI();
+  }
+
+  function drawBallMarkers() {
+    var layer = $("ball-markers");
+    var v = videoEl();
+    if (!layer || !v) return;
+    layer.innerHTML = "";
+    var r = v.getBoundingClientRect();
+    if (!r.width || !r.height || !v.videoWidth) return;
+    ballPoints.forEach(function (pt, i) {
+      var d = document.createElement("div");
+      d.className = "ball-marker";
+      d.style.left = (pt.x / v.videoWidth * r.width) + "px";
+      d.style.top = (pt.y / v.videoHeight * r.height) + "px";
+      d.textContent = String(i + 1);
+      d.title = "#" + (i + 1) + " t=" + pt.t.toFixed(2) + "s (" + pt.x + "," + pt.y + ") — click to delete";
+      d.onclick = function (e) {
+        e.stopPropagation();
+        ballPoints = removeBallPoint(ballPoints, i);
+        drawBallMarkers();
+        updateBallUI();
+      };
+      layer.appendChild(d);
+    });
+  }
+
+  function updateBallUI() {
+    var bm = $("ball-mode");
+    if (bm) {
+      bm.classList.toggle("active", ballMode);
+      bm.textContent = ballMode ? "\u26BE Tapping\u2026 (tap again to stop)" : "\u26BE Tap ball";
+    }
+    var c = $("ball-count");
+    if (c) c.textContent = ballPoints.length + (ballPoints.length === 1 ? " point" : " points");
+    var list = $("ball-list");
+    if (list) {
+      list.innerHTML = "";
+      ballPoints.forEach(function (pt, i) {
+        var s = document.createElement("span");
+        s.className = "ball-pt";
+        s.textContent = (i + 1) + ": " + pt.t.toFixed(2) + "s (" + pt.x + "," + pt.y + ")";
+        list.appendChild(s);
+      });
+    }
+    var ex = $("ball-export");
+    if (ex) ex.disabled = !ballPoints.length;
+  }
+
+  var BALL_FRAME_STEP = 1 / 30;
+  function stepBallFrame(dir) {
+    var v = videoEl();
+    if (!v || !tapVideoLoaded) return;
+    try { v.pause(); } catch (e) {}
+    var t = v.currentTime + dir * BALL_FRAME_STEP;
+    if (t < 0) t = 0;
+    if (isFinite(v.duration) && t > v.duration) t = v.duration;
+    v.currentTime = t;
+  }
+
+  function exportBallTrail() {
+    if (!ballPoints.length) {
+      setStatus("No ball points to export yet.");
+      return;
+    }
+    var v = videoEl();
+    var exp = buildBallTruth({
+      swingId: ballSwingId,
+      build: (typeof window !== "undefined" && window.SESSION_BUILD) || "dev",
+      videoName: ballVideoName,
+      durationSec: (v && isFinite(v.duration)) ? +v.duration.toFixed(3) : null,
+      fps: 30,
+      points: ballPoints
+    });
+    var blob = new Blob([JSON.stringify(exp, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    var d = new Date();
+    function p2(n) { n = String(n); return n.length < 2 ? "0" + n : n; }
+    var ds = d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate());
+    a.download = ballTruthFileName(ballSwingId, ds);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); }, 500);
+    setStatus("Exported " + ballPoints.length + " ball points \u2192 " + a.download);
+  }
+
   // Wire panel buttons once the DOM is ready.
   function wire() {
     var s = $("calib-solve"), a = $("calib-apply"), sv = $("calib-save"), c = $("calib-close"), ul = $("calib-use-last"), au = $("calib-auto"), tc = $("calib-test-capture"), lf = $("calib-load-file"), cl = $("calib-clear");
@@ -1146,38 +1375,69 @@
     // The video must be from the session camera position — the phone must
     // not move between the video and the session.
     var vf = $("calib-video-file"), lv = $("calib-live");
-    var savedStream = null, videoURL = null;
     if (vf) vf.onchange = function () {
-      var v = videoEl();
-      if (!v || !vf.files || !vf.files[0]) return;
-      savedStream = v.srcObject;
-      if (videoURL) URL.revokeObjectURL(videoURL);
-      videoURL = URL.createObjectURL(vf.files[0]);
-      v.srcObject = null;
-      v.src = videoURL;
-      v.controls = true;
-      v.play().catch(function () {});
-      if (lv) lv.classList.remove("hidden");
-      setStatus("Video loaded — pause on a clear frame, then tap the points. The camera must stay where it was for the session.");
+      if (vf.files && vf.files[0]) loadTapVideo(vf.files[0], { label: vf.files[0].name, swingId: null });
       vf.value = "";
     };
     if (lv) lv.onclick = function () {
       var v = videoEl();
       if (!v) return;
-      if (videoURL) { URL.revokeObjectURL(videoURL); videoURL = null; }
+      stopBallMode();
+      if (tapVideoURL) { try { URL.revokeObjectURL(tapVideoURL); } catch (e) {} tapVideoURL = null; }
+      tapVideoLoaded = false;
       v.src = "";
       v.controls = false;
       if (savedStream) { v.srcObject = savedStream; savedStream = null; }
+      var tools = $("ball-tap-tools");
+      if (tools) tools.classList.add("hidden");
       lv.classList.add("hidden");
       setStatus("Back on the live feed.");
     };
+    // Ball annotation ("tap the ball") tools.
+    var bmode = $("ball-mode");
+    if (bmode) bmode.onclick = function () { if (ballMode) stopBallMode(); else startBallMode(); };
+    var bfs = $("ball-frame-start");
+    if (bfs) bfs.onclick = function () {
+      var v = videoEl();
+      if (v && tapVideoLoaded) { try { v.pause(); } catch (e) {} v.currentTime = 0; }
+    };
+    var bsb = $("ball-step-back");
+    if (bsb) bsb.onclick = function () { stepBallFrame(-1); };
+    var bsf = $("ball-step-fwd");
+    if (bsf) bsf.onclick = function () { stepBallFrame(1); };
+    var bcl = $("ball-clear");
+    if (bcl) bcl.onclick = function () { ballPoints = []; drawBallMarkers(); updateBallUI(); };
+    var bex = $("ball-export");
+    if (bex) bex.onclick = exportBallTrail;
     // A solved calibration survives refreshes: restore it so a patch-day
     // reload never forces a re-tap when the phone hasn't moved.
     restoreCalibration();
   }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", wire);
-  } else {
-    wire();
+  // Public tapper API for the session page: swing cards load their clips here.
+  if (typeof window !== "undefined") {
+    window.CalibTapper = {
+      loadVideo: loadTapVideo,
+      isVideoLoaded: function () { return tapVideoLoaded; },
+      startBallMode: startBallMode,
+      stopBallMode: stopBallMode
+    };
+  }
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", wire);
+    } else {
+      wire();
+    }
   }
 })();
+
+// Node regression tests: export the pure ball-truth helpers.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    addBallPoint: addBallPoint,
+    removeBallPoint: removeBallPoint,
+    ballTruthFileName: ballTruthFileName,
+    buildBallTruth: buildBallTruth
+  };
+}

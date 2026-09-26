@@ -1393,7 +1393,32 @@ function attachClipPlayer(swingId, blob) {
     v.className = "swing-clip";
     card.appendChild(v);
   }
+  // 3) "Tap ball": load this clip into the tapper for hand-labeled ground truth.
+  if (card && !card.querySelector("button.swing-tapball")) {
+    var tb = document.createElement("button");
+    tb.className = "btn ghost swing-tapball";
+    tb.setAttribute("data-id", swingId);
+    tb.textContent = "⚾ Tap ball";
+    tb.title = "Load this swing's clip in the tapper and hand-label the ball, frame by frame";
+    card.appendChild(tb);
+  }
 }
+
+// Swing-card "⚾ Tap ball" buttons (added by attachClipPlayer): load the
+// swing's clip blob into the calibration tapper's video element.
+swingLogEl.addEventListener("click", function (ev) {
+  var tb = ev.target && ev.target.closest ? ev.target.closest("button.swing-tapball") : null;
+  if (!tb) return;
+  var id = +tb.getAttribute("data-id");
+  var clip = null;
+  for (var i = 0; i < swingClips.length; i++) {
+    if (swingClips[i].id === id) { clip = swingClips[i]; break; }
+  }
+  if (!clip || !clip.blob) return;
+  if (window.CalibTapper && typeof window.CalibTapper.loadVideo === "function") {
+    window.CalibTapper.loadVideo(clip.blob, { label: "Swing #" + id + " clip", swingId: id });
+  }
+});
 
 function startSession() {
   state.swings = [];

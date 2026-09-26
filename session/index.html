@@ -25,6 +25,7 @@
     <video id="cam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
     <div id="calib-markers"></div>
+    <div id="ball-markers"></div>
   </div>
   <div id="camera-hint">Position the camera where it was calibrated<br>(4 ft high, ~6 ft behind plate, ~6.5 ft toward 1st base)</div>
 
@@ -116,6 +117,16 @@
       <button id="calib-live" class="btn ghost hidden" title="Back to the live camera feed">📡 Live</button>
       <button id="calib-close" class="btn ghost">Close</button>
     </div>
+    <div id="ball-tap-tools" class="row hidden" style="margin-top:8px">
+      <button id="ball-mode" class="btn primary" title="Tap the ball's position frame by frame — hand-labeled ground truth">⚾ Tap ball</button>
+      <button id="ball-frame-start" class="btn ghost" title="Jump to the start of the video">⏮</button>
+      <button id="ball-step-back" class="btn ghost" title="Step back one frame (1/30 s)">◀ 1 frame</button>
+      <button id="ball-step-fwd" class="btn ghost" title="Step forward one frame (1/30 s)">1 frame ▶</button>
+      <button id="ball-clear" class="btn ghost" title="Delete all ball taps">Clear</button>
+      <button id="ball-export" class="btn" disabled title="Download the labeled ball trail as JSON">⬇ Export ball trail</button>
+      <span id="ball-count" class="muted">0 points</span>
+    </div>
+    <div id="ball-list" class="hint" style="margin-top:4px"></div>
   </div>
 
   <div id="motion-tuning">
@@ -180,14 +191,14 @@
 <script src="vendor/jsqr.min.js?v=20260920c"></script>
 <script src="vendor/lz-string.min.js?v=20260920c"></script>
 <script src="mqtt.js?v=20260920c"></script>
-<script src="cast.js?v=20260923q"></script>
-<script src="calib.js?v=20260923p"></script>
+<script src="cast.js?v=20260923r"></script>
+<script src="calib.js?v=20260923r"></script>
 <script src="webm-duration.js?v=20260920c"></script>
 <script src="swing-detect.js?v=20260920c"></script>
 <script src="audio-crack.js?v=20260921o"></script>
-<script src="clip-assemble.js?v=20260923q"></script>
-<script src="ball-detect.js?v=20260923q"></script>
-<script src="session.js?v=20260923q"></script>
+<script src="clip-assemble.js?v=20260923r"></script>
+<script src="ball-detect.js?v=20260923r"></script>
+<script src="session.js?v=20260923r"></script>
 <script src="gopro-bridge.js?v=20260919e"></script>
 </body>
 </html>

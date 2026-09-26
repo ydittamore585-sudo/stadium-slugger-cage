@@ -160,6 +160,20 @@ video.swing-clip { width: 100%; border-radius: 8px; margin-top: 8px; background:
   pointer-events: auto; cursor: pointer;
 }
 .calib-marker:hover { background: rgba(248, 113, 113, 0.5); border-color: #f87171; }
+/* Ball annotation markers: numbered, amber — distinct from green calib taps. */
+#ball-markers { position: absolute; inset: 0; pointer-events: none; }
+.ball-marker {
+  position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+  border: 2px solid #fbbf24; border-radius: 50%;
+  background: rgba(251, 191, 36, 0.30); color: #fde68a;
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+  pointer-events: auto; cursor: pointer;
+}
+.ball-marker:hover { background: rgba(248, 113, 113, 0.5); border-color: #f87171; color: #fff; }
+#ball-tap-tools { align-items: center; flex-wrap: wrap; gap: 6px; }
+#ball-mode.active { border-color: #fbbf24; color: #fbbf24; }
+#ball-list { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.ball-pt { white-space: nowrap; }
 #calib-panel {
   margin: 12px 0; padding: 12px 14px;
   background: #1e293b; border: 1px solid #334155; border-radius: 10px;
