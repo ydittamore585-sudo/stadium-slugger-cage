@@ -1415,6 +1415,26 @@ function buildBallTruth(o) {
     if (bcl) bcl.onclick = function () { ballPoints = []; drawBallMarkers(); updateBallUI(); };
     var bex = $("ball-export");
     if (bex) bex.onclick = exportBallTrail;
+    // Hit-clip buttons: fetch the hosted clip and load it into the tapper.
+    var hcb = document.querySelectorAll(".hit-clip-btn");
+    for (var hi = 0; hi < hcb.length; hi++) {
+      (function (btn) {
+        btn.onclick = function () {
+          var url = btn.getAttribute("data-clip");
+          var label = btn.textContent.trim();
+          setStatus("Loading " + label + "…");
+          btn.disabled = true;
+          fetch(url).then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.blob();
+          }).then(function (blob) {
+            loadTapVideo(blob, { label: label, swingId: null });
+          }).catch(function (e) {
+            setStatus("Couldn't load " + label + ": " + (e.message || e));
+          }).finally(function () { btn.disabled = false; });
+        };
+      })(hcb[hi]);
+    }
     // A solved calibration survives refreshes: restore it so a patch-day
     // reload never forces a re-tap when the phone hasn't moved.
     restoreCalibration();
