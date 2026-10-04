@@ -1256,6 +1256,12 @@ function loop(ts) {
 document.getElementById("motion-sens").addEventListener("change", function (ev) {
   motionLevel = ev.target.value in SENS_LEVELS ? ev.target.value : "normal";
   createDetector(); // rebuild with new sensitivity
+  // The same dropdown drives the BALL detector brightness gates:
+  // "sensitive" lowers them for dim garages (2026-10-04: 280 swings, zero
+  // tracks — the ball never cleared the normal brightness floors).
+  try {
+    if (typeof setBallSensitivity === "function") setBallSensitivity(motionLevel);
+  } catch (e) {}
 });
 
 /* ------------------------------------------------------------------ */
@@ -1513,6 +1519,23 @@ function attachClipPlayer(swingId, blob) {
     tb.textContent = "⚾ Tap ball";
     tb.title = "Load this swing's clip in the tapper and hand-label the ball, frame by frame";
     card.appendChild(tb);
+  }
+  // 3) Per-clip download (2026-10-04: the batch zip can fail after a long
+  // session — grab clips individually during the session instead).
+  if (card && !card.querySelector("button.swing-dl")) {
+    var dl = document.createElement("button");
+    dl.className = "btn ghost swing-dl";
+    dl.textContent = "⬇ Clip";
+    dl.title = "Download this swing's clip now (don't wait for the batch zip)";
+    dl.addEventListener("click", function () {
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "swing-" + swingId + ".webm";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+    card.appendChild(dl);
   }
 }
 
@@ -1816,6 +1839,20 @@ function captureSwingClip(swingId, ps) {
             ? fixWebmDuration(blob, clip.durationMs)
             : Promise.resolve(blob);
           fix.then(function (fixed) {
+            // Health check at capture time (2026-10-04: a 280-clip session
+            // ended with every stored blob unreadable at zip time — report
+            // a dead clip NOW, not hours later).
+            if (!fixed || typeof fixed.size !== "number" || fixed.size === 0) {
+              setClipError("clip #" + swingId + " assembled to an empty blob — not stored");
+              return;
+            }
+            // Cap in-memory clips (2026-10-04: 280+ clips ≈ 700MB in one tab
+            // contributed to the unreadable-blob failure). Oldest evicted
+            // first; the swing card's own player keeps its object URL.
+            if (swingClips.length >= 120) {
+              swingClips.shift();
+              setClipError("clip store full (120) — oldest clip evicted; download clips during the session");
+            }
             swingClips.push({ id: swingId, blob: fixed, durationMs: clip.durationMs });
             attachClipPlayer(swingId, fixed);
             clearClipError();

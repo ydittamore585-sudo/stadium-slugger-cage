@@ -19,7 +19,41 @@
  * `via` field ("blob"|"streak") for forensics.
  */
 
+// Sensitivity profiles for the brightness gates. "normal" is the tuned
+// default (proven on outdoor/bright-cage footage). "sensitive" lowers the
+// brightness floors for dim garages — a white ball under poor light reads
+// well below the normal gates, and motion blur spreads it further.
+// (2026-10-04: 280-swing session, zero tracks — the ball never cleared the
+// normal gates in that garage. The displacement + fit gates still reject
+// noise, so lowering brightness floors is safe.)
+// Shape gates (elongation, motion, displacement) are NOT relaxed: they are
+// what separates a ball from jitter, at any brightness.
+var BALL_SENSITIVITY = {
+  normal: {
+    blobBrightMin: 140,  // mean-RGB pre-filter in scanBlobCands
+    blobScoreGate: 120,  // BALL_SCORE_GATE
+    blobSizeBrightMin: 120, // 5x5 neighbor count floor
+    streakBrightMin: 75, // STREAK_BRIGHT_MIN
+    streakSumMin: 2400   // STREAK_SUM_MIN
+  },
+  sensitive: {
+    blobBrightMin: 100,
+    blobScoreGate: 80,
+    blobSizeBrightMin: 90, // 5x5 neighbor count floor (normal: 120)
+    streakBrightMin: 60,
+    streakSumMin: 1600
+  }
+};
+var ballSense = BALL_SENSITIVITY.normal;
+function setBallSensitivity(mode) {
+  ballSense = BALL_SENSITIVITY[mode] || BALL_SENSITIVITY.normal;
+  return mode in BALL_SENSITIVITY ? mode : "normal";
+}
+function getBallSensitivity() {
+  return ballSense === BALL_SENSITIVITY.sensitive ? "sensitive" : "normal";
+}
 var BALL_SCORE_GATE = 120; // achievable: per-pixel max is 765 (motion) * 1 * 1
+// (kept as a constant for backward compat; the live value is ballSense.blobScoreGate)
 // A track is accepted only if its end-to-end displacement clears this.
 // Justification: even a 25 mph (11.2 m/s) grounder covers 0.37 m/frame at
 // 30 fps; at a conservative 150 px/m (cage heightScale measures ~178 px/m
@@ -78,7 +112,7 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag, out) {
     for (var x = rx0; x < rx1; x += STREAK_STEP) {
       var i = (y * W + x) * 4;
       var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      if (bright < STREAK_BRIGHT_MIN) continue;
+      if (bright < ballSense.streakBrightMin) continue;
       var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
       var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
       var motion = m1 < m2 ? m1 : m2;
@@ -104,7 +138,7 @@ function detectStreakInFrame(d, dp, dn, W, H, rx0, rx1, ry0, ry1, diag, out) {
       if (bs > bestAxisSum) bestAxisSum = bs;
       var elong = perp > 0 ? bs / perp : 0;
       if (elong > bestElong) bestElong = elong;
-      if (bs < STREAK_SUM_MIN) continue;      // not substantial enough
+      if (bs < ballSense.streakSumMin) continue;      // not substantial enough
       if (bs < STREAK_ELONG_MIN * perp) continue; // compact, not a streak
       var score = bs * (bright / 255);
       if (out) out.push({ x: x, y: y, score: score });
@@ -158,7 +192,7 @@ function scanBlobCands(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
     for (var x = rx0; x < rx1; x += 3) {
       var i = (y * W + x) * 4;
       var bright = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      if (bright < 140) continue;
+      if (bright < ballSense.blobBrightMin) continue;
       var m1 = Math.abs(d[i] - dp[i]) + Math.abs(d[i + 1] - dp[i + 1]) + Math.abs(d[i + 2] - dp[i + 2]);
       var m2 = Math.abs(dn[i] - d[i]) + Math.abs(dn[i + 1] - d[i + 1]) + Math.abs(dn[i + 2] - d[i + 2]);
       var motion = Math.min(m1, m2);
@@ -171,7 +205,7 @@ function scanBlobCands(d, dp, dn, W, H, rx0, rx1, ry0, ry1) {
           var xx2 = x + xx;
           if (xx2 < 0 || xx2 >= W) continue;
           var j = (yy2 * W + xx2) * 4;
-          if ((d[j] + d[j + 1] + d[j + 2]) / 3 > 120) blob++;
+          if ((d[j] + d[j + 1] + d[j + 2]) / 3 > ballSense.blobSizeBrightMin) blob++;
         }
       }
       if (blob < 4 || blob > 20) continue;
@@ -241,7 +275,7 @@ function detectBallTrail(frames, W, H, seed, times, diag) {
     var t = (times && times[f] != null) ? times[f] : f / 30;
     var cands, via;
     var blobs = scanBlobCands(d, dp, dn, W, H, rx0, rx1, ry0, ry1);
-    if (blobs.length && blobs[0].score > BALL_SCORE_GATE) {
+    if (blobs.length && blobs[0].score > ballSense.blobScoreGate) {
       cands = blobs; via = "blob";
       if (blobs[0].score > diag.bestBlobScore) diag.bestBlobScore = Math.round(blobs[0].score);
     } else {
@@ -328,6 +362,9 @@ if (typeof module !== "undefined" && module.exports) {
     detectStreakInFrame: detectStreakInFrame,
     scanBlobCands: scanBlobCands,
     nmsCands: nmsCands,
+    setBallSensitivity: setBallSensitivity,
+    getBallSensitivity: getBallSensitivity,
+    BALL_SENSITIVITY: BALL_SENSITIVITY,
     BALL_SCORE_GATE: BALL_SCORE_GATE,
     BALL_MIN_DISPLACEMENT_PX: BALL_MIN_DISPLACEMENT_PX,
     ASSOC_CANDS_PER_FRAME: ASSOC_CANDS_PER_FRAME,
