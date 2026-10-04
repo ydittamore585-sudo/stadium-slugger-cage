@@ -1260,6 +1260,9 @@ function buildBallTruth(o) {
     ballPoints = addBallPoint(ballPoints, { t: t, x: p.u, y: p.v });
     drawBallMarkers();
     updateBallUI();
+    // Auto-advance one frame so the next tap lands on the next frame —
+    // tap-tap-tap through the ball flight (2026-10-04: Yancy's request).
+    stepBallFrame(1);
   }
 
   function drawBallMarkers() {
@@ -1400,8 +1403,16 @@ function buildBallTruth(o) {
       setStatus("Back on the live feed.");
     };
     // Ball annotation ("tap the ball") tools.
+    // Toggling off = "done": auto-save the trail (2026-10-04: Yancy's
+    // request — no separate export step after tapping).
     var bmode = $("ball-mode");
-    if (bmode) bmode.onclick = function () { if (ballMode) stopBallMode(); else startBallMode(); };
+    if (bmode) bmode.onclick = function () {
+      if (ballMode) {
+        var n = ballPoints.length;
+        stopBallMode();
+        if (n > 0) exportBallTrail();
+      } else startBallMode();
+    };
     var bfs = $("ball-frame-start");
     if (bfs) bfs.onclick = function () {
       var v = videoEl();
