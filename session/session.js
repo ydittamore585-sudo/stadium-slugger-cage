@@ -358,6 +358,14 @@ var SENS_LEVELS = {
   sensitive: { spikeMin: 0.020, promMin: 0.015, riseMin: 0.012 }
 };
 var motionLevel = "normal";
+// 2026-10-05: restore across refreshes — a refresh used to reset the
+// dropdown to Normal (bit sessions 50-51 that morning; they ran on Normal
+// instead of the intended Sensitive). localStorage is the established
+// pattern here (camera/mic/cast IDs all persist this way).
+try {
+  var _ml = localStorage.getItem("ssc-motion-sens");
+  if (_ml && (_ml in SENS_LEVELS)) motionLevel = _ml;
+} catch (e) {}
 var swingDetector = null; // created in startSession/reset
 var pendingSpike = null;  // {spike, ballTrackPromise} — awaiting validation
 var lastHotFrac = 0; // latest motion reading, for manual-mark detector snapshots
@@ -1255,6 +1263,7 @@ function loop(ts) {
 
 document.getElementById("motion-sens").addEventListener("change", function (ev) {
   motionLevel = ev.target.value in SENS_LEVELS ? ev.target.value : "normal";
+  try { localStorage.setItem("ssc-motion-sens", motionLevel); } catch (e) {}
   createDetector(); // rebuild with new sensitivity
   // The same dropdown drives the BALL detector brightness gates:
   // "sensitive" lowers them for dim garages (2026-10-04: 280 swings, zero
@@ -1263,6 +1272,16 @@ document.getElementById("motion-sens").addEventListener("change", function (ev) 
     if (typeof setBallSensitivity === "function") setBallSensitivity(motionLevel);
   } catch (e) {}
 });
+
+// Sync the dropdown + ball gates to the restored motionLevel on page load,
+// so a refresh can't silently drop back to Normal.
+(function syncMotionSensUI() {
+  var sel = document.getElementById("motion-sens");
+  if (sel) sel.value = motionLevel;
+  try {
+    if (typeof setBallSensitivity === "function") setBallSensitivity(motionLevel);
+  } catch (e) {}
+})();
 
 /* ------------------------------------------------------------------ */
 /* Bat-crack audio detector (mic).                                      */
