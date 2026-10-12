@@ -1,7 +1,7 @@
 // Raiders VB PWA service worker — offline-first app shell.
 // All data lives on-device in localStorage; this cache only makes the
 // app itself load without a network connection after the first visit.
-const CACHE = "raiders-vb-v1";
+const CACHE = "raiders-vb-v2";
 const APP_SHELL = [
   "/stadium-slugger-cage/volleyball/",
   "/stadium-slugger-cage/volleyball/index.html",
